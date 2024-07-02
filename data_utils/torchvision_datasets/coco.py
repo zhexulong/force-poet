@@ -43,6 +43,10 @@ class CocoDetection(VisionDataset):
                  cache_mode=False, local_rank=0, local_size=1):
         super(CocoDetection, self).__init__(root, transforms, transform, target_transform)
         from pycocotools.coco import COCO
+        import json
+
+        annFile = json.load(open(annFile, 'r'))
+
         self.coco = COCO(annFile)
         self.ids = list(sorted(self.coco.imgs.keys()))
         self.cache_mode = cache_mode

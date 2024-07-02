@@ -327,7 +327,7 @@ def main(args):
     if args.eval_bop:
         print(args.dataset)
         bop_evaluate(model, matcher, data_loader_val, args.eval_set, args.bbox_mode,
-                     args.rotation_representation, device, args.output_dir, args.dataset)
+                     args.rotation_representation, device, args.output_dir)
         return
 
     print("Start training")

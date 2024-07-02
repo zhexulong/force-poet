@@ -321,12 +321,13 @@ def build(image_set, args):
     root = Path(args.dataset_path)
     assert root.exists(), f'provided dataset path {root} does not exist'
     PATHS = {
-        "train": (root / "train", root / "annotations" / f'train.json'),
-        "train_synt": (root / "train", root / "annotations" / f'train_synt.json'),
-        "train_pbr": (root / "train", root / "annotations" / f'train_pbr.json'),
-        "test": (root / "test_all", root / "annotations" / f'test.json'),
-        "keyframes": (root / "test_all", root / "annotations" / f'keyframes.json'),
-        "keyframes_bop": (root / "test_all", root / "annotations"/ f'keyframes_bop.json'),
+        "train": (root, root / "annotations" / f'train.json'),
+        "train_synt": (root, root / "annotations" / f'train_synt.json'),
+        "train_pbr": (root, root / "annotations" / f'train_pbr.json'),
+        "test": (root, root / "annotations" / f'test.json'),
+        "test_all": (root, root / "annotations" / f'test.json'),
+        "keyframes": (root, root / "annotations" / f'keyframes.json'),
+        "keyframes_bop": (root, root / "annotations"/ f'keyframes_bop.json'),
         "val": (root / "val", root / "annotations" / f'val.json'),
     }
 
