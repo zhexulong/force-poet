@@ -1,0 +1,2 @@
+python main.py --enc_layers 5 --dec_layers 5 --nheads 16 --resume ./output/checkpoint0039.pth --inference --inference_path /media/sebastian/TEMP/poet/test --inference_output ./output_inference/ \
+ --backbone maskrcnn --backbone_cfg ./configs/ycbv_rcnn.yaml --backbone_weights /media/sebastian/TEMP/poet/ycbv_maskrcnn_checkpoint.pth.tar
