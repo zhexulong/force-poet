@@ -21,6 +21,7 @@ from util.misc import NestedTensor
 
 from .position_encoding import build_position_encoding
 from .backbone_maskrcnn import build_maskrcnn
+from .cns_yolo import build_cns_yolo
 
 
 class Joiner(nn.Sequential):
@@ -57,6 +58,8 @@ def build_backbone(args):
     # Build the object detector backbone
     if args.backbone in ["maskrcnn", "fasterrcnn"]:
         backbone = build_maskrcnn(args)
+    elif args.backbone == "yolov4":
+        backbone = build_cns_yolo(args)
     else:
         raise NotImplementedError
     model = Joiner(backbone, position_embedding)
