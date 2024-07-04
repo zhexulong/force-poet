@@ -10,7 +10,7 @@ import os
 
 # Parameter Initialization
 annotation_set = "test"  # Choices: train, test
-train_set = "pbr_only"  # Choices: full, real_only, synt_only, pbr_only, real_synt
+train_set = "full"  # Choices: full, real_only, synt_only, pbr_only, real_synt
 test_set = "full"  # Choices: full, keyframes, bop
 
 if annotation_set == "train":
@@ -51,9 +51,9 @@ if annotation_set == "train":
 elif annotation_set == "test":
     if test_set == "full":
         # Annotate the full test set
-        data_paths = ['test/']
+        data_paths = ['test_all/']
         img_types = ['real']
-        annotation_path = 'test.json'
+        annotation_path = 'test_all.json'
         only_keyframes = False
     elif test_set == "keyframes":
         # Annotate the Keyframes as designated by most papers
