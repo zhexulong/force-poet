@@ -5,3 +5,5 @@
 *.pt
 *.pth
 *.tar
+
+output*/
