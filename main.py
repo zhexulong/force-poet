@@ -50,7 +50,7 @@ def get_args_parser():
                         help='gradient clipping max norm')
 
     # * Backbone
-    parser.add_argument('--backbone', default='yolov4', type=str, choices=['yolov4', 'maskrcnn', 'fasterrcnn'],
+    parser.add_argument('--backbone', default='yolov4', type=str, choices=['yolov4', 'maskrcnn', 'fasterrcnn', 'dino'],
                         help="Name of the convolutional backbone to use")
     parser.add_argument('--backbone_cfg', default='configs/ycbv_yolov4-csp.cfg', type=str,
                         help="Path to the backbone config file to use")

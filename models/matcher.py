@@ -199,7 +199,7 @@ class PoseMatcher(nn.Module):
             # The transformer does not change the order of the queries, hence the indices of the dummy embeddings are known
             # Filter them out by taking only the first n_boxes boxes predicted per image in the batch
             sizes = [len(t["boxes"]) for t in targets]
-            indices = [linear_sum_assignment(c[i][:n_boxes[i]]) for i, c in enumerate(C.split(sizes, -1))]
+            indices = [linear_sum_assignment(c[i][:n_boxes[i]]) for i, c in enumerate(C.split(sizes, -1))] # takes from each 'cost' in the batch the first n ('sizes') elements and applies 'linear_sum_assignment'
 
             # TODO: Adapt for other modes
             if self.bbox_mode == "backbone":
