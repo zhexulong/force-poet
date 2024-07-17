@@ -77,30 +77,6 @@ class MaskRCNNDinoBackbone(MaskRCNN):
       for key, value in self.class_info.items():
         self.map[value] = int(key)
 
-    # self.map = {
-    #   "master chef can": 1,
-    #   "cracker box": 2,
-    #   "sugar box": 3,
-    #   "tomato soup can": 4,
-    #   "mustard bottle": 5,
-    #   "tuna fish can": 6,
-    #   "pudding box": 7,
-    #   "gelatin box": 8,
-    #   "potted meat can": 9,
-    #   "banana": 10,
-    #   "pitcher base": 11,
-    #   "bleach cleanser": 12,
-    #   "bowl": 13,
-    #   "mug": 14,
-    #   "power drill": 15,
-    #   "wood block": 16,
-    #   "scissors": 17,
-    #   "large marker": 18,
-    #   "large clamp": 19,
-    #   "extra large clamp": 20,
-    #   "foam brick": 21
-    # }
-
     self.vectorizer = TfidfVectorizer()
     self.tfidf = self.vectorizer.fit_transform(self.map.keys())
 
