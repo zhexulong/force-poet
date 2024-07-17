@@ -24,6 +24,7 @@ from .backbone_maskrcnn import build_maskrcnn
 from .cns_yolo import build_cns_yolo
 
 from .backbone_rcnn_dino import build_rcnn_dino
+from .backbone_yolo_dino import build_yolo_dino
 
 
 class Joiner(nn.Sequential):
@@ -62,8 +63,10 @@ def build_backbone(args):
         backbone = build_maskrcnn(args)
     elif args.backbone == "yolov4":
         backbone = build_cns_yolo(args)
-    elif args.backbone == "dino":
+    elif args.backbone == "dinorcnn":
         backbone = build_rcnn_dino(args)
+    elif args.backbone == "dinoyolo":
+        backbone = build_yolo_dino(args)
     else:
         raise NotImplementedError
     model = Joiner(backbone, position_embedding)
