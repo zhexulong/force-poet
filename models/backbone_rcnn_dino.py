@@ -114,6 +114,8 @@ class MaskRCNNDinoBackbone(MaskRCNN):
 
   def dinoPredict(self, images: torch.Tensor, caption_: str, box_threshold: float, text_threshold: float,
                   device: str = "cuda", remove_combined: bool = False) -> Tuple[torch.Tensor, torch.Tensor, List[str]]:
+
+    # "preprocess_caption()"
     caption = caption_.lower().strip()
     if not caption.endswith("."):
       caption = caption + "."
@@ -122,37 +124,38 @@ class MaskRCNNDinoBackbone(MaskRCNN):
     images = images.to(device)
 
     with torch.no_grad():
-      outputs = model(images, captions=[caption])
+      outputs = model(images, captions=[caption for _ in range(len(images))])
 
-    prediction_logits = outputs["pred_logits"].cpu().sigmoid()[0]  # prediction_logits.shape = (nq, 256)
-    prediction_boxes = outputs["pred_boxes"].cpu()[0]  # prediction_boxes.shape = (nq, 4)
+    for idx, _ in enumerate(range(outputs["pred_boxes"].shape[0])):
+      prediction_logits = outputs["pred_logits"][0].cpu().sigmoid()  # prediction_logits.shape = (nq, 256)
+      prediction_boxes = outputs["pred_boxes"][0].cpu()  # prediction_boxes.shape = (nq, 4)
 
-    mask = prediction_logits.max(dim=1)[0] > box_threshold
-    logits = prediction_logits[mask]  # logits.shape = (n, 256)
-    boxes = prediction_boxes[mask]  # boxes.shape = (n, 4)
+      mask = prediction_logits.max(dim=1)[0] > box_threshold
+      logits = prediction_logits[mask]  # logits.shape = (n, 256)
+      boxes = prediction_boxes[mask]  # boxes.shape = (n, 4)
 
-    tokenizer = model.tokenizer
-    tokenized = tokenizer(caption)
+      tokenizer = model.tokenizer
+      tokenized = tokenizer(caption)
 
-    if remove_combined:
-      sep_idx = [i for i in range(len(tokenized['input_ids'])) if tokenized['input_ids'][i] in [101, 102, 1012]]
+      if remove_combined:
+        sep_idx = [i for i in range(len(tokenized['input_ids'])) if tokenized['input_ids'][i] in [101, 102, 1012]]
 
-      phrases = []
-      for logit in logits:
-        max_idx = logit.argmax()
-        insert_idx = bisect.bisect_left(sep_idx, max_idx)
-        right_idx = sep_idx[insert_idx]
-        left_idx = sep_idx[insert_idx - 1]
-        phrases.append(
-          get_phrases_from_posmap(logit > text_threshold, tokenized, tokenizer, left_idx, right_idx).replace('.', ''))
-    else:
-      phrases = [
-        get_phrases_from_posmap(logit > text_threshold, tokenized, tokenizer).replace('.', '')
-        for logit
-        in logits
-      ]
+        phrases = []
+        for logit in logits:
+          max_idx = logit.argmax()
+          insert_idx = bisect.bisect_left(sep_idx, max_idx)
+          right_idx = sep_idx[insert_idx]
+          left_idx = sep_idx[insert_idx - 1]
+          phrases.append(
+            get_phrases_from_posmap(logit > text_threshold, tokenized, tokenizer, left_idx, right_idx).replace('.', ''))
+      else:
+        phrases = [
+          get_phrases_from_posmap(logit > text_threshold, tokenized, tokenizer).replace('.', '')
+          for logit
+          in logits
+        ]
 
-    return boxes, logits.max(dim=1)[0], phrases
+      yield boxes, logits.max(dim=1)[0], phrases
 
   def normalizeImages(self, images):
     # Inference image preprocessing from GroundingDINO
@@ -230,58 +233,53 @@ class MaskRCNNDinoBackbone(MaskRCNN):
 
     # [bbox, score, label]
     images = self.normalizeImages(tensor_list.tensors)
-    boxes, logits, phrases = self.dinoPredict(
-      images=images,
-      caption_=self.dino_caption,
-      box_threshold=0.35,
-      text_threshold=0.25
-    )
-
-    image = tensor_list.tensors[0].cpu().numpy()
-    image = np.moveaxis(image, 0, 2)
-
-    h, w, _ = image.shape
-    boxes = boxes * torch.Tensor([w, h, w, h])
-    boxes = box_convert(boxes, "cxcywh",
-                        "xyxy")  # Convert bbox to xyxy format (later in PoET it will be converted back to cxcywh)
-
-    ################################
-    # BBox Visualization
-    #
-    # labels = [
-    #   f"{phrase} {logit:.2f}"
-    #   for phrase, logit
-    #   in zip(phrases, logits)
-    # ]
-    # detections = sv.Detections(xyxy=boxes.numpy())
-    # box_annotator = sv.BoxAnnotator()
-    # annotated_frame = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
-    # annotated_frame = box_annotator.annotate(scene=annotated_frame, detections=detections, labels=labels)
-    # cv2.imshow('frame', annotated_frame)
-    # cv2.waitKey(-1)
-    # cv2.destroyAllWindows()
+    raw_images = tensor_list.tensors.cpu().numpy()
 
     predictions = []
-    if not len(boxes) == 0:
-      p = []
-      for box, logits, label in zip(boxes, logits, phrases):
-        label_vec = self.vectorizer.transform([label])
-        cos_sim = cosine_similarity(label_vec, self.tfidf).flatten()
+    for idx, (boxes, logits, phrases) in enumerate(self.dinoPredict(images=images, caption_=self.dino_caption, box_threshold=0.35, text_threshold=0.25)):
+      image = raw_images[idx]
+      image = np.moveaxis(image, 0, 2)  # transform (c, h, w) to (h, w, c) (put rgb channel at the end)
 
-        # TODO: Refactor threshold
-        if all(v <= 0.3 for v in cos_sim):  # If not a single label matches 30% of pred label
-          continue
+      h, w, _ = image.shape # h, w, c
+      boxes = boxes * torch.Tensor([w, h, w, h])
+      boxes = box_convert(boxes, "cxcywh", "xyxy")  # Convert bbox to xyxy format (later in PoET it will be converted back to cxcywh)
 
-        best_match_idx = np.argmax(cos_sim)
-        best_match = list(self.map.keys())[best_match_idx]
-        cls = self.map[best_match]
+      ################################
+      # BBox Visualization
+      #
+      # labels = [
+      #   f"{phrase} {logit:.2f}"
+      #   for phrase, logit
+      #   in zip(phrases, logits)
+      # ]
+      # detections = sv.Detections(xyxy=boxes.numpy())
+      # box_annotator = sv.BoxAnnotator()
+      # annotated_frame = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
+      # annotated_frame = box_annotator.annotate(scene=annotated_frame, detections=detections, labels=labels)
+      # cv2.imshow('frame', annotated_frame)
+      # cv2.waitKey(-1)
+      # cv2.destroyAllWindows()
 
-        pred = torch.hstack((box, logits, torch.tensor(cls))).to("cuda")
-        p.append(pred)
+      if not len(boxes) == 0:
+        p = []
+        for box, logits, label in zip(boxes, logits, phrases):
+          label_vec = self.vectorizer.transform([label])
+          cos_sim = cosine_similarity(label_vec, self.tfidf).flatten()
 
-      if len(p) != 0:  # Only stack valid found predictions
-        p = torch.stack(p)
-        predictions.append(p)
+          # TODO: Refactor threshold
+          if all(v <= 0.1 for v in cos_sim):  # If not a single label matches 30% of pred label
+            continue
+
+          best_match_idx = np.argmax(cos_sim)
+          best_match = list(self.map.keys())[best_match_idx]
+          cls = self.map[best_match]
+
+          pred = torch.hstack((box, logits, torch.tensor(cls))).to("cuda")
+          p.append(pred)
+
+        if len(p) != 0:  # Only stack valid found predictions
+          p = torch.stack(p)
+          predictions.append(p)
 
     # Prepare the feature map
     out: Dict[str, NestedTensor] = {}
