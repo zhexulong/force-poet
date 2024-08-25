@@ -118,7 +118,7 @@ def get_args_parser():
     parser.add_argument('--rotation_loss_coef', default=1, type=float, help='Loss weighing parameter for the rotation')
 
     # dataset parameters
-    parser.add_argument('--dataset', default='ycbv', type=str, choices=('ycbv', 'lmo'),
+    parser.add_argument('--dataset', default='ycbv', type=str, choices=('ycbv', 'lmo', 'custom'),
                         help="Choose the dataset to train/evaluate PoET on.")
     parser.add_argument('--dataset_path', default='/data', type=str,
                         help='Path to the dataset ')

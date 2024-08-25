@@ -1,0 +1,8 @@
+{
+  "book": true,
+  "cabinet": true,
+  "can": true,
+  "chair": false,
+  "doll": false,
+  "table": false
+}
