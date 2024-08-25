@@ -158,7 +158,12 @@ class YOLODINOBackbone(nn.Module):
     self.vectorizer = TfidfVectorizer()
     self.tfidf = self.vectorizer.fit_transform(self.map.keys())
 
-    self.dino_caption = ". ".join(list(self.map.keys()))
+    ## TODO: REFACTORE!
+    ## TODO: Implement single/multi label classification by flag
+    if dataset == "custom":
+        self.dino_caption = "object in the middle."
+    else:
+        self.dino_caption = ". ".join(list(self.map.keys()))
 
   def dinoPredict(self, images: torch.Tensor, caption_: str, box_threshold: float, text_threshold: float,
                   device: str = "cuda", remove_combined: bool = False) -> Tuple[
@@ -331,5 +336,5 @@ def build_yolo_dino(args):
             load_darknet_weights(cns_yolo, args.backbone_weights)
 
 
-    yolo_dino = YOLODINOBackbone(yolo_backbone=cns_yolo, dino_backbone=dino, class_info=args.dataset_path + args.class_info)
+    yolo_dino = YOLODINOBackbone(yolo_backbone=cns_yolo, dino_backbone=dino, class_info=args.dataset_path + args.class_info, dataset=args.dataset)
     return yolo_dino
