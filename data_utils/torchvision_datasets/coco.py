@@ -45,7 +45,7 @@ class CocoDetection(VisionDataset):
         from pycocotools.coco import COCO
         import json
 
-        annFile = json.load(open(annFile, 'r'))
+        # annFile = json.load(open(annFile, 'r'))
 
         self.coco = COCO(annFile)
         self.ids = list(sorted(self.coco.imgs.keys()))

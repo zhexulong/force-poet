@@ -21,7 +21,7 @@ from sklearn.metrics.pairwise import cosine_similarity
 from .groundingdino.util.slconfig import SLConfig
 from .groundingdino.models.GroundingDINO import build_groundingdino
 from .groundingdino.util.misc import clean_state_dict
-import groundingdino.datasets.transforms as T
+import models.groundingdino.datasets.transforms as T
 
 from util.misc import NestedTensor
 

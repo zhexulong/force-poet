@@ -19,7 +19,7 @@ from .groundingdino.util.misc import clean_state_dict
 from .groundingdino.util.slconfig import SLConfig
 from .groundingdino.util.utils import get_phrases_from_posmap
 from .groundingdino.util.inference import annotate
-import groundingdino.datasets.transforms as T
+import models.groundingdino.datasets.transforms as T
 import cv2
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
