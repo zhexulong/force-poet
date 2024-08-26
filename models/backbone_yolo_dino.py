@@ -169,6 +169,8 @@ class YOLODINOBackbone(nn.Module):
                   device: str = "cuda", remove_combined: bool = False) -> Tuple[
     torch.Tensor, torch.Tensor, List[str]]:
 
+    # TODO: Integrate "phrase" mode of groundingdino! (inference_on_an_image.py)
+
     # "preprocess_caption()"
     caption = caption_.lower().strip()
     if not caption.endswith("."):
@@ -181,8 +183,9 @@ class YOLODINOBackbone(nn.Module):
       outputs = model(images, captions=[caption for _ in range(len(images))])
 
     for idx, _ in enumerate(range(outputs["pred_boxes"].shape[0])):
-      prediction_logits = outputs["pred_logits"][0].cpu().sigmoid()  # prediction_logits.shape = (nq, 256)
-      prediction_boxes = outputs["pred_boxes"][0].cpu()  # prediction_boxes.shape = (nq, 4)
+      # TODO: Don't copy output to CPU
+      prediction_logits = outputs["pred_logits"][idx].cpu().sigmoid()  # prediction_logits.shape = (nq, 256)
+      prediction_boxes = outputs["pred_boxes"][idx].cpu()  # prediction_boxes.shape = (nq, 4)
 
       mask = prediction_logits.max(dim=1)[0] > box_threshold
       logits = prediction_logits[mask]  # logits.shape = (n, 256)
