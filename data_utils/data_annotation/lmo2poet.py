@@ -8,13 +8,14 @@ import json
 import os
 import cv2
 
-base_path = '/lmo/train/'
-data_paths = ['train_synt/', 'train_pbr/']
-img_types = ['synt', 'pbr']
+base_path = '/media/sebastian/TEMP/poet/datasets/lmo/'
+# data_paths = ['train/', 'test/']
+data_paths = ['test/']
+# img_types = ['synt', 'real']
+img_types = ['real']
 
-
-output_base_path = '/lmo/annotations/'
-annotation_paths = ['train_synt.json', 'train.json']
+output_base_path = '/media/sebastian/TEMP/poet/datasets/lmo/annotations/'
+annotation_paths = ['test.json']
 
 categories = [
     {'supercategory': 'background', 'id': 0, 'name': 'background'},
