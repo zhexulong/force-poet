@@ -1,2 +1,5 @@
-python main.py --enc_layers 5 --dec_layers 5 --nheads 16 --resume ./output/checkpoint0039.pth --inference --inference_path /media/sebastian/TEMP/poet/test --inference_output ./output_inference/ 
- --backbone dino --backbone_cfg ./configs/ycbv_rcnn.yaml --backbone_weights /media/sebastian/TEMP/poet/ycbv_maskrcnn_checkpoint.pth.tar
+python main.py --enc_layers 5 --dec_layers 5 --nheads 16 --resume ./output/checkpoint0039.pth --inference --inference_path /media/sebastian/TEMP/poet/test --inference_output ./output_inference/ \
+ --backbone dinoyolo --backbone_cfg ./configs/ycbv_rcnn.yaml --backbone_weights /media/sebastian/TEMP/poet/ycbv_maskrcnn_checkpoint.pth.tar
+
+ python main.py --enc_layers 5 --dec_layers 5 --nheads 16 --resume /media/sebastian/TEMP/poet/poet_ycbv_yolo.pth --inference --inference_path /media/sebastian/TEMP/poet/test --inference_output ./output_inference/ \
+ --backbone dinoyolo --backbone_cfg ./configs/ycbv_yolov4-csp.cfg --backbone_weights /media/sebastian/TEMP/poet/ycbv_yolo_weights.pt --dataset_path /media/sebastian/TEMP/poet/datasets/ycbv --class_info /annotations/ycbv_classes.json --lr_backbone 0.0
