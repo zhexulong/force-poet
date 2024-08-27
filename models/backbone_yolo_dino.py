@@ -151,6 +151,10 @@ class YOLODINOBackbone(nn.Module):
       for key, value in self.class_info.items():
         new_key = value[4:].replace('_', ' ')
         self.map[new_key] = int(key)
+    elif dataset == "icmi":
+      for key, value in self.class_info.items():
+        new_key = value.replace('_', ' ')
+        self.map[new_key] = int(key)
     else:
       for key, value in self.class_info.items():
         self.map[value] = int(key)
