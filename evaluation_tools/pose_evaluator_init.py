@@ -3,6 +3,7 @@
 # Copyright (c) 2022 Thomas Jantos (thomas.jantos@aau.at), University of Klagenfurt - Control of Networked Systems (CNS). All Rights Reserved.
 # Licensed under the BSD-2-Clause-License with no commercial use [see LICENSE for details]
 # ------------------------------------------------------------------------
+import os
 
 import numpy as np
 import json
@@ -37,6 +38,9 @@ def load_models(path, classes):
     """
     Load the 3D model point cloud and store it in a dict.
     """
+
+    if not os.path.isfile(path + 'models_info.json'):
+        return None, None
 
     with open(path + 'models_info.json', 'r') as f:
         models_info_data = json.load(f)
@@ -83,7 +87,7 @@ def build_pose_evaluator(args):
     symmetries_path = args.dataset_path + args.model_symmetry
     model_symmetry = load_model_symmetry(symmetries_path, classes)
     classes = [classes[k] for k in classes]
-    if args.dataset == 'ycbv' or args.dataset == "custom":
+    if args.dataset == 'ycbv' or args.dataset == "custom" or args.dataset == "icmi":
         evaluator = PoseEvaluator(models, classes, models_info, model_symmetry)
     elif args.dataset == 'lmo':
         evaluator = PoseEvaluatorLMO(models, classes, models_info, model_symmetry)
