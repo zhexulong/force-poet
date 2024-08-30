@@ -12,9 +12,12 @@
 # ------------------------------------------------------------------------
 
 import json
+from pathlib import Path
 
 import cv2
 import torch
+from tabulate import tabulate
+
 import util.misc as utils
 
 from data_utils.data_prefetcher import data_prefetcher
@@ -82,8 +85,16 @@ def inference(args):
     samples, targets = prefetcher.next()
     results = {}
 
-    if not os.path.exists(args.inference_output + "bbox/"):
-        os.makedirs(args.inference_output + "bbox/")
+    # Create inference output folder structure
+    if not os.path.exists(args.inference_output):
+        Path(args.inference_output + "bbox/").mkdir(parents=True, exist_ok=True)
+
+    # Store the args file
+    out_file_name = "args.txt"
+    args_dict = vars(args)
+    table_data = [[key, value] for key, value in args_dict.items()]
+    with open(args.inference_output + out_file_name, "w") as f:
+        f.write(tabulate(table_data, headers=["Argument", "Value"], tablefmt="rounded_outline"))
 
     start = time.time()
 
@@ -130,7 +141,8 @@ def inference(args):
     print(f"Total took: {time.time() - start:.4f}s")
     print(f"Avrg. took: {(time.time() - start) / len(data_loader_inference):.4f}s")
     print(f"FPS: {1.0 / ((time.time() - start) / len(data_loader_inference)):.4f}")
-    # Store the json-file
+
+    # Store the results json-file
     out_file_name = "results.json"
     with open(args.inference_output + out_file_name, 'w') as out_file:
         json.dump(results, out_file)
