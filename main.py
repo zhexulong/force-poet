@@ -28,6 +28,7 @@ from engine import train_one_epoch, pose_evaluate, bop_evaluate
 from models import build_model
 from evaluation_tools.pose_evaluator_init import build_pose_evaluator
 from inference_tools.inference_engine import inference
+from tabulate import tabulate
 
 
 def get_args_parser():
@@ -205,8 +206,8 @@ def main(args):
     pose_evaluator = build_pose_evaluator(args)
 
     model_without_ddp = model
-    n_parameters = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    print('number of params:', n_parameters)
+    # n_parameters = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    # print('number of params:', n_parameters)
 
     # Build the dataset for training and validation
     dataset_train = build_dataset(image_set=args.train_set, args=args)
@@ -243,8 +244,8 @@ def main(args):
                 break
         return out
 
-    for n, p in model_without_ddp.named_parameters():
-        print(n)
+    # for n, p in model_without_ddp.named_parameters():
+    #     print(n)
 
     param_dicts = [
         {
@@ -277,6 +278,48 @@ def main(args):
         print(f'\nUsing DistributedDataParallel\n')
         model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu], find_unused_parameters=True)
         model_without_ddp = model.module
+
+    ## PRINT
+    n_parameters = sum(p.numel() for p in model.parameters() if p.requires_grad)
+
+    RESET = '\033[0m'
+    BOLD = '\033[1m'
+
+    headers = ["Argument", "Value"]
+    data = [
+      ["Flags", ""],
+      [f"{BOLD}Inference{RESET}", BOLD + str(args.inference) + RESET],
+      [f"{BOLD}Eval{RESET}", BOLD + str(args.eval) + RESET],
+      ["Eval BOP", str(args.eval_bop)],
+      ["Distributed", str(args.distributed)],
+      ["", ""],
+      ["Resume", str(args.resume)],
+      [f"{BOLD}Backbone{RESET}", BOLD + str(args.backbone) + RESET],
+      ["BBox Mode", str(args.bbox_mode)],
+      [f"{BOLD}Dataset{RESET}", BOLD + str(args.dataset) + RESET],
+      ["Dataset Path", str(args.dataset_path)],
+      ["N Classes", str(args.n_classes)],
+      ["Class Mode", str(args.class_mode)],
+      ["Rot. Reprs.", str(args.rotation_representation)],
+      ["", ""],
+      ["Training", ""],
+      ["Batch Size", str(args.batch_size)],
+      ["Epochs", str(args.epochs)],
+      ["Train Set", str(args.train_set)],
+      ["", ""],
+      ["Eval", ""],
+      ["Eval Batch Size", str(args.eval_batch_size)],
+      [f"{BOLD}Eval Set{RESET}", BOLD + str(args.eval_set) + RESET],
+      ["", ""],
+      ["Inference", ""],
+      ["Inference Path", str(args.inference_path)],
+      ["Inference Output", str(args.inference_output)],
+    ]
+
+    print(tabulate(data, headers=headers, tablefmt="rounded_outline"))
+    print("")
+    print('Number of params:', n_parameters)
+    exit()
 
     output_dir = Path(args.output_dir)
     # Load checkpoint
