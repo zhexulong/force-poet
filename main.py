@@ -319,7 +319,6 @@ def main(args):
     print(tabulate(data, headers=headers, tablefmt="rounded_outline"))
     print("")
     print('Number of params:', n_parameters)
-    exit()
 
     output_dir = Path(args.output_dir)
     # Load checkpoint
