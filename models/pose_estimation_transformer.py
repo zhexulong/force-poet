@@ -178,6 +178,10 @@ class PoET(nn.Module):
         image_sizes = [[sample.shape[-2], sample.shape[-1]] for sample in samples.tensors]
         features, pos, pred_objects = self.backbone(samples)
 
+        # TODO: Refactor case of no predictions
+        if len(pred_objects) == 0:
+            return None, None
+
         # Extract the bounding boxes for each batch element
         pred_boxes = []
         pred_classes = []

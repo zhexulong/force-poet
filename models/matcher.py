@@ -208,7 +208,11 @@ class PoseMatcher(nn.Module):
                 for b, (out_box, out_cls, tgt) in enumerate(zip(out_bbox.split(num_queries), out_class.split(num_queries), targets)):
                     tgt_box = tgt["boxes"]
                     tgt_cls = tgt["labels"]
-                    gious = generalized_box_iou(box_cxcywh_to_xyxy(out_box[:n_boxes[b]]), box_cxcywh_to_xyxy(tgt_box))
+                    try:
+                        gious = generalized_box_iou(box_cxcywh_to_xyxy(out_box[:n_boxes[b]]), box_cxcywh_to_xyxy(tgt_box))
+                    except Exception as err:
+                        print(f"[ERR] Skipping IoU calculation for {b}/{len(targets)} in this batch because of: {err}! This should never happen, please review code!")
+                        continue
                     new_src_idx = []
                     new_tgt_idx = []
                     for idx, (i, j) in enumerate(zip(indices[b][0], indices[b][1])):

@@ -286,6 +286,8 @@ class YOLODINOBackbone(nn.Module):
         if len(p) != 0:  # Only stack valid found predictions
           p = torch.stack(p)
           predictions.append(p)
+      else:
+        predictions.append(None)
 
     # out: Dict[str, NestedTensor] = {}
     # for name, x in xs.items():
