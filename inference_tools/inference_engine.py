@@ -128,7 +128,7 @@ def inference(args):
             # Draw predicted bounding box and save to output folder
             detections = sv.Detections(xyxy=np.array([transform_bbox(pred_box, (640, 480))])) # transform normalized cxcywh to xyxy
             box_annotator = sv.BoxAnnotator()
-            annotated_frame = cv2.imread(args.inference_path + img_file)
+            annotated_frame = cv2.imread(str(os.path.join(args.inference_path, img_file)))
             annotated_frame = box_annotator.annotate(scene=annotated_frame, detections=detections)
             cv2.imwrite(args.inference_output + "bbox/" + img_id + ".png", annotated_frame)
             # cv2.imshow('frame', annotated_frame)

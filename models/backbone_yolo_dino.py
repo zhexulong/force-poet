@@ -220,7 +220,9 @@ class YOLODINOBackbone(nn.Module):
       yield boxes, logits.max(dim=1)[0], phrases
 
   def normalizeImages(self, images):
-    # Inference image preprocessing from GroundingDINO
+    """
+    Normalizes tensor of images for GroundingDINO.
+    """
     transform = T.Compose(
       [
         # T.RandomResize([800], max_size=1333),
@@ -232,7 +234,7 @@ class YOLODINOBackbone(nn.Module):
     return transformed
 
   def forward(self, tensor_list: NestedTensor):
-    # Pass Image through YOLO
+    # Pass Image through YOLO for feature maps
     _, out = self.yolo_backbone(tensor_list)
 
     # [bbox, score, label]
@@ -245,10 +247,12 @@ class YOLODINOBackbone(nn.Module):
       image = raw_images[idx]
       image = np.moveaxis(image, 0, 2)  # transform (c, h, w) to (h, w, c) (put rgb channel at the end)
 
+      # Unnormalize bboxes
+      # Predicted boxes are in normalized "cxcywh" format!!
       h, w, _ = image.shape  # h, w, c
       boxes = boxes * torch.Tensor([w, h, w, h])
-      boxes = box_convert(boxes, "cxcywh",
-                          "xyxy")  # Convert bbox to xyxy format (later in PoET it will be converted back to cxcywh)
+      # PoET expects xyxy format (later it will be converted back to cxcywh)
+      boxes = box_convert(boxes, "cxcywh","xyxy")
 
       ################################
       # BBox Visualization

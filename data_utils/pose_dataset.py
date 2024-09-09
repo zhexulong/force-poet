@@ -64,7 +64,7 @@ class PoseDataset(CocoDetection):
         target = {'image_id': image_id, 'annotations': target}
         img, target = self.prepare(img, target)
         if self._transforms is not None:
-            img, target = self._transforms(img, target)
+            img, target = self._transforms(img, target) # Transforms bbox from un-normalized xyxy to normalized cxcywh
 
         if self.jitter:
             # For the bounding box center we sample from a truncated normal distribution limited by the bounding box
@@ -330,7 +330,7 @@ def build(image_set, args):
         "test_all": (root, root / "annotations" / f'test_all.json'),
         "keyframes": (root, root / "annotations" / f'keyframes.json'),
         "keyframes_bop": (root, root / "annotations"/ f'keyframes_bop.json'),
-        "val": (root / "val", root / "annotations" / f'val.json'),
+        "val": (root, root / "annotations" / f'val.json'),
     }
 
     img_folder, ann_file = PATHS[image_set]
