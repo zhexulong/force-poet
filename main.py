@@ -30,6 +30,8 @@ from evaluation_tools.pose_evaluator_init import build_pose_evaluator
 from inference_tools.inference_engine import inference
 from tabulate import tabulate
 
+from logger import info, warn, err
+
 
 def get_args_parser():
 
@@ -279,24 +281,20 @@ def main(args):
         model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu], find_unused_parameters=True)
         model_without_ddp = model.module
 
-    ## PRINT
     n_parameters = sum(p.numel() for p in model.parameters() if p.requires_grad)
-
-    RESET = '\033[0m'
-    BOLD = '\033[1m'
 
     headers = ["Argument", "Value"]
     data = [
       ["Flags", ""],
-      [f"{BOLD}Inference{RESET}", BOLD + str(args.inference) + RESET],
-      [f"{BOLD}Eval{RESET}", BOLD + str(args.eval) + RESET],
+      [f"Inference", str(args.inference)],
+      [f"Eval", str(args.eval)],
       ["Eval BOP", str(args.eval_bop)],
       ["Distributed", str(args.distributed)],
       ["", ""],
       ["Resume", str(args.resume)],
-      [f"{BOLD}Backbone{RESET}", BOLD + str(args.backbone) + RESET],
+      [f"Backbone", str(args.backbone)],
       ["BBox Mode", str(args.bbox_mode)],
-      [f"{BOLD}Dataset{RESET}", BOLD + str(args.dataset) + RESET],
+      [f"Dataset", str(args.dataset)],
       ["Dataset Path", str(args.dataset_path)],
       ["N Classes", str(args.n_classes)],
       ["Class Mode", str(args.class_mode)],
@@ -309,7 +307,7 @@ def main(args):
       ["", ""],
       ["Eval", ""],
       ["Eval Batch Size", str(args.eval_batch_size)],
-      [f"{BOLD}Eval Set{RESET}", BOLD + str(args.eval_set) + RESET],
+      [f"Eval Set", str(args.eval_set)],
       ["", ""],
       ["Inference", ""],
       ["Inference Path", str(args.inference_path)],
@@ -319,6 +317,10 @@ def main(args):
     print(tabulate(data, headers=headers, tablefmt="rounded_outline"))
     print("")
     print('Number of params:', n_parameters)
+    print("")
+
+    with open(Path(args.output_dir, "args.txt"), "w") as f:
+      f.write(tabulate(data, headers=headers, tablefmt="rounded_outline"))
 
     output_dir = Path(args.output_dir)
     # Load checkpoint
@@ -331,9 +333,11 @@ def main(args):
         missing_keys, unexpected_keys = model_without_ddp.load_state_dict(checkpoint['model'], strict=False)
         unexpected_keys = [k for k in unexpected_keys if not (k.endswith('total_params') or k.endswith('total_ops'))]
         if len(missing_keys) > 0:
-            print('Missing Keys: {}'.format(missing_keys))
+            warn("There are {len(missing_keys)} missing keys in state_dict!")
+            # print('Missing Keys: {}'.format(missing_keys))
         if len(unexpected_keys) > 0:
-            print('Unexpected Keys: {}'.format(unexpected_keys))
+            warn(f"There are {len(unexpected_keys)} unexpected keys in state_dict!")
+            # print('Unexpected Keys: {}'.format(unexpected_keys))
         if not args.eval and 'optimizer' in checkpoint and 'lr_scheduler' in checkpoint and 'epoch' in checkpoint:
             import copy
             p_groups = copy.deepcopy(optimizer.param_groups)
