@@ -296,10 +296,12 @@ class PoET(nn.Module):
         else:
             raise NotImplementedError("PoET Bounding Box Mode not implemented!")
 
-        query_embeds = torch.stack(query_embeds)
+        query_embeds = torch.stack(query_embeds)  # "object queries" => generated embeddings from the bbox prediction
         pred_boxes = torch.stack(pred_boxes)
         pred_classes = torch.stack(pred_classes)
 
+        # Construct multi-scale feature maps from the original feature maps of the backbone,
+        # for subsequent processing by the Deformable DETR transformer.
         srcs = []
         masks = []
         for lvl, feat in enumerate(features):
@@ -319,13 +321,13 @@ class PoET(nn.Module):
                     src = self.input_proj[lvl](srcs[-1])
                 m = samples.mask
                 mask = F.interpolate(m[None].float(), size=src.shape[-2:]).to(torch.bool)[0]
-                pos_l = self.backbone[1](NestedTensor(src, mask)).to(src.dtype)
+                pos_l = self.backbone[1](NestedTensor(src, mask)).to(src.dtype)  # embedding to determine in which feature level each query pixel lies in
                 srcs.append(src)
                 masks.append(mask)
                 pos.append(pos_l)
 
         if self.ref_points_mode == 'bbox':
-            reference_points = pred_boxes[:, :, :2]
+            reference_points = pred_boxes[:, :, :2]  # predicted bbox centers from backbone
         else:
             reference_points = None
 
@@ -333,6 +335,12 @@ class PoET(nn.Module):
             query_embeds = self.query_embed.weight
 
         # Pass everything to the transformer
+
+        # srcs = feature maps from the backbone
+        # pos = feature-level position embeddings (in which feature level does each query pixel (value) lie in)
+        # reference_points = either bbox center coordinates from backbone or learned during training. Specifies where attention module in Deformable DETR attends object queries around ("Where to search for objects?").
+
+        # hs = hidden states for each decoding layer
         hs, init_reference, _, _, _ = self.transformer(srcs, masks, pos, query_embeds, reference_points)
 
         outputs_translation = []
@@ -340,10 +348,11 @@ class PoET(nn.Module):
         bs, _ = pred_classes.shape
         output_idx = torch.where(pred_classes > 0, pred_classes, 0).view(-1)
 
-        # Iterate over the decoder outputs to calculate the intermediate and final outputs (translation and rotation)
+        # Iterate over the decoder outputs (hidden states) to calculate the intermediate and final outputs (translation and rotation)
+        # (n_queries = number of object hypothesises)
         for lvl in range(hs.shape[0]):
-            output_rotation = self.rotation_head[lvl](hs[lvl])
-            output_translation = self.translation_head[lvl](hs[lvl])
+            output_rotation = self.rotation_head[lvl](hs[lvl])  # (bs, n_queries, (n_classes + 1) * 6) => "6D rotation representation"; n_classes + 1 because of "background"/"no prediction"
+            output_translation = self.translation_head[lvl](hs[lvl])  # (bs, n_queries, (n_classes + 1) * 3) "3D translation representation";
             if self.class_mode == 'specific':
                 # Select the correct output according to the predicted class in the class-specific mode
                 output_rotation = output_rotation.view(bs * self.n_queries, self.n_classes, -1)
@@ -355,6 +364,7 @@ class PoET(nn.Module):
                     [query[output_idx[i], :] for i, query in enumerate(output_translation)]).view(bs, self.n_queries,
                                                                                                   -1)
 
+            # transform 6D rotation representation to 3x3 rotation matrix (or quaternion)
             output_rotation = self.process_rotation(output_rotation)
 
             outputs_rotation.append(output_rotation)
@@ -363,12 +373,15 @@ class PoET(nn.Module):
         outputs_rotation = torch.stack(outputs_rotation)
         outputs_translation = torch.stack(outputs_translation)
 
+        # Predictions on the last hidden states (last decoder layer) of decoder are the final predictions
         out = {'pred_translation': outputs_translation[-1], 'pred_rotation': outputs_rotation[-1],
                'pred_boxes': pred_boxes, 'pred_classes': pred_classes}
 
+        # "aux_loss" are the intermediate predictions
         if self.aux_loss:
             out['aux_outputs'] = self._set_aux_loss(outputs_translation, outputs_rotation, pred_boxes, pred_classes)
 
+        # n_boxes_per_sample = predicted bboxes per image
         return out, n_boxes_per_sample
 
     def _set_aux_loss(self, outputs_translation, outputs_quaternion, pred_boxes, pred_classes):

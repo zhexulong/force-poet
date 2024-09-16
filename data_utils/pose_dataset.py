@@ -64,7 +64,7 @@ class PoseDataset(CocoDetection):
         target = {'image_id': image_id, 'annotations': target}
         img, target = self.prepare(img, target)
         if self._transforms is not None:
-            img, target = self._transforms(img, target) # Transforms bbox from un-normalized xyxy to normalized cxcywh
+            img, target = self._transforms(img, target)  # Transforms bbox from un-normalized xyxy to normalized cxcywh
 
         if self.jitter:
             # For the bounding box center we sample from a truncated normal distribution limited by the bounding box
