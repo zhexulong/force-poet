@@ -181,7 +181,7 @@ def pose_evaluate(model, matcher, pose_evaluator, data_loader, image_set, bbox_m
     total_time = time.time() - start_time
     total_time_str = str(datetime.timedelta(seconds=int(total_time)))
     print("Evaluation time: {}".format(total_time_str))
-    return
+    return avg_trans, avg_rot
 
 
 @torch.no_grad()

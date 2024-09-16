@@ -20,7 +20,7 @@ import numpy.linalg as LA
 
 
 class PoseEvaluator(object):
-    def __init__(self, models, classes, model_info, model_symmetry, depth_scale=0.1):
+    def __init__(self, models, classes, model_info, model_symmetry, depth_scale=0.1, training=False):
         """
         Initialization of the Pose Evaluator for the YCB-V dataset.
 
@@ -46,6 +46,9 @@ class PoseEvaluator(object):
         self.depth_scale = depth_scale
 
         self.reset()  # Initialize
+
+        self.writer = None
+        self.training = training
 
     def reset(self):
         """
@@ -511,7 +514,7 @@ class PoseEvaluator(object):
         json_file.close()
         return
 
-    def calculate_class_avg_translation_error(self, output_path):
+    def calculate_class_avg_translation_error(self, output_path, epoch):
         """
         Calculate the average translation error for each class and then the average error across all classes in meters
         """
@@ -548,6 +551,9 @@ class PoseEvaluator(object):
                 avg_translation_errors[cls] = np.nan
             log_file.write("Class: {} \t\t {}".format(cls, avg_translation_errors[cls]))
             log_file.write("\n")
+            if self.writer is not None and epoch is not None and self.training == True:
+                self.writer.add_scalar(f'ValClassTrans/avg_trans_err/{cls}', avg_translation_errors[cls], epoch)
+
         total_avg_error = np.sum(translation_errors) / len(translation_errors)
         log_file.write("All:\t\t\t\t\t {}".format(total_avg_error))
         avg_translation_errors["mean"] = [total_avg_error]
@@ -556,9 +562,9 @@ class PoseEvaluator(object):
         log_file.close()
         json.dump(avg_translation_errors, json_file)
         json_file.close()
-        return
+        return total_avg_error
 
-    def calculate_class_avg_rotation_error(self, output_path):
+    def calculate_class_avg_rotation_error(self, output_path, epoch):
         """
         Calculate the average rotation error given by the Geodesic distance for each class and then the average error
         across all classes in degree
@@ -604,6 +610,9 @@ class PoseEvaluator(object):
                 avg_rotation_errors[cls] = np.nan
             log_file.write("Class: {} \t\t {}".format(cls, avg_rotation_errors[cls]))
             log_file.write("\n")
+            if self.writer is not None and epoch is not None and self.training == True:
+                self.writer.add_scalar(f'ValClassRot/avg_rot_err/{cls}', avg_rotation_errors[cls], epoch)
+
         total_avg_error = np.sum(rotation_errors) / len(rotation_errors)
         log_file.write("All:\t\t\t\t\t {}".format(total_avg_error))
         avg_rotation_errors["mean"] = [total_avg_error]
@@ -612,7 +621,7 @@ class PoseEvaluator(object):
         log_file.close()
         json.dump(avg_rotation_errors, json_file)
         json_file.close()
-        return
+        return total_avg_error
 
     def se3_mul(self, RT1, RT2):
         """

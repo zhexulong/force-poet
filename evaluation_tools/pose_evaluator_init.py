@@ -88,7 +88,7 @@ def build_pose_evaluator(args):
     model_symmetry = load_model_symmetry(symmetries_path, classes)
     classes = [classes[k] for k in classes]
     if args.dataset == 'ycbv' or args.dataset == "custom" or args.dataset == "icmi":
-        evaluator = PoseEvaluator(models, classes, models_info, model_symmetry)
+        evaluator = PoseEvaluator(models, classes, models_info, model_symmetry, 0.1, args.eval is False and args.eval_bop is False)
     elif args.dataset == 'lmo':
         evaluator = PoseEvaluatorLMO(models, classes, models_info, model_symmetry)
     else:

@@ -14,6 +14,7 @@
 import argparse
 import datetime
 import json
+import os
 import random
 import time
 from pathlib import Path
@@ -31,6 +32,8 @@ from inference_tools.inference_engine import inference
 from tabulate import tabulate
 
 from logger import info, warn, err
+
+from torch.utils.tensorboard import SummaryWriter
 
 
 def get_args_parser():
@@ -283,31 +286,42 @@ def main(args):
 
     n_parameters = sum(p.numel() for p in model.parameters() if p.requires_grad)
 
-    headers = ["Argument", "Value"]
+    headers = ["Argument", "Value", "Description"]
     data = [
       ["Flags", ""],
-      [f"Inference", str(args.inference)],
-      [f"Eval", str(args.eval)],
+      ["Inference", str(args.inference)],
+      ["Eval", str(args.eval)],
       ["Eval BOP", str(args.eval_bop)],
       ["Distributed", str(args.distributed)],
+      ["RGB Augm.", str(args.rgb_augmentation), "Whether to augment training images with RGB transformations."],
+      ["Grayscale Augm.", str(args.grayscale), "Whether to augment training images with Grayscale transformations."],
       ["", ""],
-      ["Resume", str(args.resume)],
-      [f"Backbone", str(args.backbone)],
+      ["Architecture", ""],
+      ["Enc. Layers", str(args.enc_layers)],
+      ["Dec. Layers", str(args.dec_layers)],
+      ["Num. Heads", str(args.nheads)],
+      ["Num. Object Queries", str(args.num_queries), "Number of object queries per image. (Numb. of objects hypothesises per image)"],
+      ["", ""],
+      ["Resume", str(args.resume), "Model checkpoint to resume training of."],
+      ["Backbone", str(args.backbone)],
       ["BBox Mode", str(args.bbox_mode)],
-      [f"Dataset", str(args.dataset)],
+      ["Dataset", str(args.dataset)],
       ["Dataset Path", str(args.dataset_path)],
-      ["N Classes", str(args.n_classes)],
+      ["N Classes", str(args.n_classes), "Number of total classes/labels."],
       ["Class Mode", str(args.class_mode)],
       ["Rot. Reprs.", str(args.rotation_representation)],
       ["", ""],
       ["Training", ""],
+      ["Train Set", str(args.train_set)],
       ["Batch Size", str(args.batch_size)],
       ["Epochs", str(args.epochs)],
-      ["Train Set", str(args.train_set)],
+      ["Learning Rate", str(args.lr)],
+      ["Transl. Loss Coef.", str(args.translation_loss_coef), "Weighting of translation loss."],
+      ["Rot. Loss Coef.", str(args.rotation_loss_coef)],
       ["", ""],
       ["Eval", ""],
       ["Eval Batch Size", str(args.eval_batch_size)],
-      [f"Eval Set", str(args.eval_set)],
+      ["Eval Set", str(args.eval_set)],
       ["", ""],
       ["Inference", ""],
       ["Inference Path", str(args.inference_path)],
@@ -319,10 +333,18 @@ def main(args):
     print('Number of params:', n_parameters)
     print("")
 
-    with open(Path(args.output_dir, "args.txt"), "w") as f:
+    output_dir = Path(args.output_dir)
+    if "train" in args.output_dir or "tune" in args.output_dir:
+      output_dir = Path(os.path.join(output_dir, datetime.datetime.now().strftime("%Y-%m-%d_%H:%M:%S")))
+
+    if not os.path.exists(output_dir):
+      os.makedirs(output_dir)
+
+    with open(Path(output_dir, "args.txt"), "w") as f:
       f.write(tabulate(data, headers=headers, tablefmt="rounded_outline"))
 
-    output_dir = Path(args.output_dir)
+
+
     # Load checkpoint
     if args.resume:
         if args.resume.startswith('https'):
@@ -378,11 +400,18 @@ def main(args):
 
     print("Start training")
     start_time = time.time()
+    writer = SummaryWriter(os.path.join(output_dir))
+    pose_evaluator.writer = writer
+
     for epoch in range(args.start_epoch, args.epochs):
         if args.distributed:
             sampler_train.set_epoch(epoch)
+
+        start = time.time()
         train_stats = train_one_epoch(
             model, criterion, data_loader_train, optimizer, device, epoch, args.clip_max_norm)
+        stop = time.time()
+
         lr_scheduler.step()
         if args.output_dir:
             checkpoint_paths = [output_dir / 'checkpoint.pth']
@@ -398,10 +427,20 @@ def main(args):
                     'args': args,
                 }, checkpoint_path)
 
+        writer.add_scalar('Train/lr', train_stats["lr"], epoch)
+        writer.add_scalar('Train/loss', train_stats["loss"], epoch)
+        # writer.add_scalar('Train/loss_trans', train_stats["loss_trans"], epoch)
+        writer.add_scalar('Train/loss_pos', train_stats["position_loss"], epoch)
+        writer.add_scalar('Train/loss_rot', train_stats["loss_rot"], epoch)
+        writer.add_scalar('Train/times/time_per_epoch', stop - start, epoch)
+
         # Do evaluation on the validation set every n epochs
         if epoch % args.eval_interval == 0:
-            pose_evaluate(model, matcher, pose_evaluator, data_loader_val, args.eval_set, args.bbox_mode,
-                          args.rotation_representation, device, args.output_dir, epoch)
+            avg_trans_err, avg_rot_err = pose_evaluate(model, matcher, pose_evaluator, data_loader_val, args.eval_set, args.bbox_mode,
+                          args.rotation_representation, device, str(output_dir), epoch)
+
+            writer.add_scalar("Val/avg_trans_err", avg_trans_err, epoch)
+            writer.add_scalar("Val/avg_rot_err", avg_rot_err, epoch)
 
             log_stats = {**{f'train_{k}': v for k, v in train_stats.items()},
                          'epoch': epoch,
@@ -415,16 +454,48 @@ def main(args):
             with (output_dir / "log.txt").open("a") as f:
                 f.write(json.dumps(log_stats) + "\n")
 
+    # Log Hyperparameters
+    writer.add_hparams(
+      {
+        "Batch Size": args.eval_batch_size,
+        "Eval Batch Size": args.eval_batch_size,
+        "Learning Rate": args.lr,
+        "Transl. Loss Coef.": args.translation_loss_coef,
+        "Rot. Loss Coef.": args.rotation_loss_coef,
+        "Enc. Layers": args.enc_layers,
+        "Dec. Layers": args.dec_layers,
+        "Number Heads": args.nheads,
+        "Number Object Queries": args.num_queries,
+        "RGB Augmentation": args.rgb_augmentation,
+        "Grayscale Augmentation": args.grayscale,
+      },
+      {
+          "rot_err": log_stats["train_rotation_loss"],
+          # "trans_err": log_stats["train_loss_trans"],
+          "pos_err": log_stats["train_position_loss"],
+          "loss": log_stats["train_loss"],
+      }
+    )
+
     total_time = time.time() - start_time
     total_time_str = str(datetime.timedelta(seconds=int(total_time)))
     print('Training time {}'.format(total_time_str))
     print('Evaluate final trained model')
     eval_start_time = time.time()
     pose_evaluate(model, matcher, pose_evaluator, data_loader_val, args.eval_set, args.bbox_mode,
-                  args.rotation_representation, device, args.output_dir)
+                  args.rotation_representation, device, str(output_dir))
     eval_total_time = time.time() - eval_start_time
     eval_total_time_str = str(datetime.timedelta(seconds=int(eval_total_time)))
     print('Evaluation time {}'.format(eval_total_time_str))
+
+    # Log execution times to file
+    if args.output_dir and utils.is_main_process():
+      with (output_dir / "log.txt").open("a") as f:
+        obj = {
+          "training_time": total_time_str,
+          "eval_total_time": eval_total_time_str,
+        }
+        f.write(json.dumps(obj) + "\n")
 
 
 if __name__ == '__main__':
