@@ -290,6 +290,8 @@ class YOLODINOBackbone(nn.Module):
         if len(p) != 0:  # Only stack valid found predictions
           p = torch.stack(p)
           predictions.append(p)
+        else:
+          predictions.append(None)
       else:
         predictions.append(None)
 
