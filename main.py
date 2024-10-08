@@ -33,9 +33,8 @@ from evaluation_tools.pose_evaluator_init import build_pose_evaluator
 from inference_tools.inference_engine import inference
 from tabulate import tabulate
 
-from logger import info, warn, err
+from util.logger import warn, err
 
-from torch.utils.tensorboard import SummaryWriter
 from CorrectedSummaryWriter import CorrectedSummaryWriter
 
 
