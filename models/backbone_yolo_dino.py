@@ -2,6 +2,7 @@
 # Author: Thomas Jantos (thomas.jantos@aau.at)
 import bisect
 import json
+import os
 from collections import OrderedDict
 
 import numpy as np
@@ -11,6 +12,7 @@ from sklearn.feature_extraction.text import TfidfVectorizer
 from torch import Tensor, nn
 from typing import Dict, Optional, List, Tuple
 
+from constants import ROOT_DIR
 from .yolo.backbone_models.models import Darknet, load_darknet_weights
 from .yolo.yolo_utils.general import non_max_suppression
 from .yolo.yolo_utils.torch_utils import select_device
@@ -349,12 +351,13 @@ class NestedTensor(object):
 
 
 def build_yolo_dino(args):
-    ## TODO: Refactor Paths!!!
-    args_dino = SLConfig.fromfile("/home/sebastian/repos/GroundingDINO/groundingdino/config/GroundingDINO_SwinT_OGC.py")
+    ## TODO: Refactor Paths! Provide them via args!
+    # args_dino = SLConfig.fromfile("/home/sebastian/repos/GroundingDINO/groundingdino/config/GroundingDINO_SwinT_OGC.py")
+    args_dino = SLConfig.fromfile(os.path.join(ROOT_DIR, "models/groundingdino/config/GroundingDINO_SwinT_OGC.py"))
     args_dino.device = "cuda"
     dino = build_groundingdino(args_dino)
-    checkpoint = torch.load("/home/sebastian/repos/GroundingDINO/weights/groundingdino_swint_ogc.pth",
-                            map_location="cpu")
+    # checkpoint = torch.load("/home/sebastian/repos/GroundingDINO/weights/groundingdino_swint_ogc.pth", map_location="cpu")
+    checkpoint = torch.load(os.path.join(ROOT_DIR, "models/groundingdino/weights/groundingdino_swint_ogc.pth"), map_location="cpu")
     dino.load_state_dict(clean_state_dict(checkpoint["model"]), strict=False)
     dino.eval()
 
