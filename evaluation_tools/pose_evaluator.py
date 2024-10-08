@@ -49,6 +49,7 @@ class PoseEvaluator(object):
 
         self.writer = None
         self.training = training
+        self.testing = False
 
     def reset(self):
         """
@@ -551,8 +552,11 @@ class PoseEvaluator(object):
                 avg_translation_errors[cls] = np.nan
             log_file.write("Class: {} \t\t {}".format(cls, avg_translation_errors[cls]))
             log_file.write("\n")
-            if self.writer is not None and epoch is not None and self.training == True:
-                self.writer.add_scalar(f'ValClassTrans/avg_trans_err/{cls}', avg_translation_errors[cls], epoch)
+            if self.writer is not None and self.training == True:
+                if not self.testing:
+                    self.writer.add_scalar(f'ValClassTrans/avg_trans_err/{cls}', avg_translation_errors[cls], epoch)
+                else:
+                    self.writer.add_scalar(f'TestClassTrans/avg_trans_err/{cls}', avg_translation_errors[cls])
 
         total_avg_error = np.sum(translation_errors) / len(translation_errors)
         log_file.write("All:\t\t\t\t\t {}".format(total_avg_error))
@@ -610,8 +614,11 @@ class PoseEvaluator(object):
                 avg_rotation_errors[cls] = np.nan
             log_file.write("Class: {} \t\t {}".format(cls, avg_rotation_errors[cls]))
             log_file.write("\n")
-            if self.writer is not None and epoch is not None and self.training == True:
-                self.writer.add_scalar(f'ValClassRot/avg_rot_err/{cls}', avg_rotation_errors[cls], epoch)
+            if self.writer is not None and self.training == True:
+                if not self.testing:
+                    self.writer.add_scalar(f'ValClassRot/avg_rot_err/{cls}', avg_rotation_errors[cls], epoch)
+                else:
+                    self.writer.add_scalar(f"TestClassRot/avg_rot_err/{cls}", avg_rotation_errors[cls])
 
         total_avg_error = np.sum(rotation_errors) / len(rotation_errors)
         log_file.write("All:\t\t\t\t\t {}".format(total_avg_error))

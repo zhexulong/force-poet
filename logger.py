@@ -21,8 +21,11 @@ RESET = '\033[0m' # called to return to standard terminal text color
 def info(msg):
   print(f"[INFO] {msg}")
 
+def succ(msg):
+  print(f"{GREEN}[WARN]{RESET} {msg}")
+
 def warn(msg):
-  print(f"{YELLOW}[INFO] {msg}{RESET}")
+  print(f"{YELLOW}[WARN]{RESET} {msg}")
 
 def err(msg):
-  print(f"{RED}[INFO] {msg}{RED}")
+  print(f"{RED}[INFO]{RESET} {msg}")

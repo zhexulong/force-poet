@@ -16,7 +16,9 @@ import datetime
 import json
 import os
 import random
+import sys
 import time
+import traceback
 from pathlib import Path
 
 import numpy as np
@@ -34,6 +36,7 @@ from tabulate import tabulate
 from logger import info, warn, err
 
 from torch.utils.tensorboard import SummaryWriter
+from CorrectedSummaryWriter import CorrectedSummaryWriter
 
 
 def get_args_parser():
@@ -51,7 +54,7 @@ def get_args_parser():
     parser.add_argument('--weight_decay', default=1e-4, type=float)
     parser.add_argument('--epochs', default=50, type=int)
     parser.add_argument('--lr_drop', default=100, type=int)
-    parser.add_argument('--lr_drop_epochs', default=None, type=int, nargs='+')
+    parser.add_argument('--gamma', default=0.1, type=float)
     parser.add_argument('--clip_max_norm', default=0.1, type=float,
                         help='gradient clipping max norm')
 
@@ -130,6 +133,7 @@ def get_args_parser():
                         help='Path to the dataset ')
     parser.add_argument('--train_set', default="train", type=str, help="Determine on which dataset split to train")
     parser.add_argument('--eval_set', default="test", type=str, help="Determine on which dataset split to evaluate")
+    parser.add_argument('--test_set', default="test", type=str, help="Determine on which dataset split to test")
     parser.add_argument('--synt_background', default=None, type=str,
                         help="Directory containing the background images from which to sample")
     parser.add_argument('--n_classes', default=21, type=int, help="Number of classes present in the dataset")
@@ -172,6 +176,7 @@ def get_args_parser():
                         help='start epoch')
     parser.add_argument('--eval', action='store_true', help='Run model in evaluation mode')
     parser.add_argument('--eval_bop', action='store_true', help="Run model in BOP challenge evaluation mode")
+    parser.add_argument('--test', action='store_true', help="Run model in BOP challenge test mode")
     parser.add_argument('--num_workers', default=0, type=int)
     parser.add_argument('--cache_mode', default=False, action='store_true', help='whether to cache images on memory')
 
@@ -277,7 +282,7 @@ def main(args):
     else:
         optimizer = torch.optim.AdamW(param_dicts, lr=args.lr,
                                       weight_decay=args.weight_decay)
-    lr_scheduler = torch.optim.lr_scheduler.StepLR(optimizer, args.lr_drop)
+    lr_scheduler = torch.optim.lr_scheduler.StepLR(optimizer, args.lr_drop, args.gamma)
 
     if args.distributed:
         print(f'\nUsing DistributedDataParallel\n')
@@ -316,12 +321,17 @@ def main(args):
       ["Batch Size", str(args.batch_size)],
       ["Epochs", str(args.epochs)],
       ["Learning Rate", str(args.lr)],
+      ["LR. Drop", str(args.lr_drop), "Decays learning rate all 'LR. Drop' epochs by multiplicative of 'Gamma'"],
+      ["Gamma", str(args.gamma), "Multiplicative factor of learning rate drop"],
       ["Transl. Loss Coef.", str(args.translation_loss_coef), "Weighting of translation loss."],
       ["Rot. Loss Coef.", str(args.rotation_loss_coef)],
       ["", ""],
       ["Eval", ""],
       ["Eval Batch Size", str(args.eval_batch_size)],
       ["Eval Set", str(args.eval_set)],
+      ["", ""],
+      ["Test", ""],
+      ["Test Set", str(args.test_set)],
       ["", ""],
       ["Inference", ""],
       ["Inference Path", str(args.inference_path)],
@@ -367,8 +377,13 @@ def main(args):
             for pg, pg_old in zip(optimizer.param_groups, p_groups):
                 pg['lr'] = pg_old['lr']
                 pg['initial_lr'] = pg_old['initial_lr']
-            print(optimizer.param_groups)
+            # print(optimizer.param_groups)
             lr_scheduler.load_state_dict(checkpoint['lr_scheduler'])
+
+            # Fallback if gamma was an array previously
+            if isinstance(lr_scheduler.gamma, list):
+              lr_scheduler.gamma = lr_scheduler.gamma[0]
+
             # todo: this is a hack for doing experiment that resume from checkpoint and also modify lr scheduler
             #  (e.g., decrease lr in advance).
             args.override_resumed_lr_drop = True
@@ -400,100 +415,150 @@ def main(args):
 
     print("Start training")
     start_time = time.time()
-    writer = SummaryWriter(os.path.join(output_dir))
+    writer = CorrectedSummaryWriter(os.path.join(output_dir))
     pose_evaluator.writer = writer
 
-    for epoch in range(args.start_epoch, args.epochs):
-        if args.distributed:
-            sampler_train.set_epoch(epoch)
+    try:
+        best_loss = sys.float_info.max
+        epoch = 0
+        for epoch in range(args.start_epoch, args.epochs):
+            if args.distributed:
+                sampler_train.set_epoch(epoch)
 
-        start = time.time()
-        train_stats = train_one_epoch(
-            model, criterion, data_loader_train, optimizer, device, epoch, args.clip_max_norm)
-        stop = time.time()
+            start = time.time()
+            train_stats = train_one_epoch(
+                model, criterion, data_loader_train, optimizer, device, epoch, args.clip_max_norm)
+            stop = time.time()
 
-        lr_scheduler.step()
-        if args.output_dir:
-            checkpoint_paths = [output_dir / 'checkpoint.pth']
-            # extra checkpoint before LR drop and every 5 epochs
-            if (epoch + 1) % args.lr_drop == 0 or (epoch + 1) % args.save_interval == 0:
-                checkpoint_paths.append(output_dir / f'checkpoint{epoch:04}.pth')
-            for checkpoint_path in checkpoint_paths:
+            lr_scheduler.step()
+            if args.output_dir:
+                # checkpoint_paths = [output_dir / 'checkpoint.pth']
+
+                # extra checkpoint before LR drop and every 5 epochs
+                # if (epoch + 1) % args.lr_drop == 0 or (epoch + 1) % args.save_interval == 0:
+                #     checkpoint_paths.append(output_dir / f'checkpoint{epoch:04}.pth')
+
+                # for checkpoint_path in checkpoint_paths:
                 utils.save_on_master({
                     'model': model_without_ddp.state_dict(),
                     'optimizer': optimizer.state_dict(),
                     'lr_scheduler': lr_scheduler.state_dict(),
                     'epoch': epoch,
                     'args': args,
-                }, checkpoint_path)
+                }, output_dir / f'checkpoint{epoch:04}.pth')
 
-        writer.add_scalar('Train/lr', train_stats["lr"], epoch)
-        writer.add_scalar('Train/loss', train_stats["loss"], epoch)
-        # writer.add_scalar('Train/loss_trans', train_stats["loss_trans"], epoch)
-        writer.add_scalar('Train/loss_pos', train_stats["position_loss"], epoch)
-        writer.add_scalar('Train/loss_rot', train_stats["loss_rot"], epoch)
-        writer.add_scalar('Train/times/time_per_epoch', stop - start, epoch)
+                if train_stats['loss'] < best_loss:
+                  # checkpoint_paths.append(output_dir / f'checkpoint{epoch:04}.pth')
+                  best_loss = train_stats['loss']
+                  utils.save_on_master({
+                    'model': model_without_ddp.state_dict(),
+                    'optimizer': optimizer.state_dict(),
+                    'lr_scheduler': lr_scheduler.state_dict(),
+                    'epoch': epoch,
+                    'args': args,
+                  }, 'checkpoint.pth')
 
-        # Do evaluation on the validation set every n epochs
-        if epoch % args.eval_interval == 0:
-            avg_trans_err, avg_rot_err = pose_evaluate(model, matcher, pose_evaluator, data_loader_val, args.eval_set, args.bbox_mode,
-                          args.rotation_representation, device, str(output_dir), epoch)
+            writer.add_scalar('Train/lr', train_stats["lr"], epoch)
+            writer.add_scalar('Train/loss', train_stats["loss"], epoch)
 
-            writer.add_scalar("Val/avg_trans_err", avg_trans_err, epoch)
-            writer.add_scalar("Val/avg_rot_err", avg_rot_err, epoch)
+            # (!!) train_stats["loss_trans"] => train_stats["loss_trans_unscaled"] * args.translation_loss_coef (!!)
+            # writer.add_scalar('Train/loss_trans', train_stats["loss_trans"], epoch)
 
-            log_stats = {**{f'train_{k}': v for k, v in train_stats.items()},
-                         'epoch': epoch,
-                         'n_parameters': n_parameters}
-        else:
-            log_stats = {**{f'train_{k}': v for k, v in train_stats.items()},
-                         'epoch': epoch,
-                         'n_parameters': n_parameters}
+            # (!!) train_stats["position_loss"] = train_stats["loss_trans_unscaled"] (!!)
+            writer.add_scalar('Train/position_loss', train_stats["position_loss"], epoch)
 
-        if args.output_dir and utils.is_main_process():
-            with (output_dir / "log.txt").open("a") as f:
-                f.write(json.dumps(log_stats) + "\n")
+            # (!!) train_stats["loss_rot"] => train_stats["loss_rot_unscaled"] * args.rotation_loss_coef (!!)
+            # writer.add_scalar('Train/loss_rot', train_stats["loss_rot"], epoch)
+
+            # (!!) train_stats["rotation_loss"] = train_stats["loss_rot_unscaled"] (!!)
+            writer.add_scalar('Train/rotation_loss', train_stats["rotation_loss"], epoch)
+            writer.add_scalar('Train/times/time_per_epoch', stop - start, epoch)
+
+            # Do evaluation on the validation set every n epochs
+            if epoch % args.eval_interval == 0:
+                avg_trans_err, avg_rot_err = pose_evaluate(model, matcher, pose_evaluator, data_loader_val, args.eval_set, args.bbox_mode,
+                              args.rotation_representation, device, str(output_dir), epoch)
+
+                writer.add_scalar("Val/avg_trans_err", avg_trans_err, epoch)
+                writer.add_scalar("Val/avg_rot_err", avg_rot_err, epoch)
+
+                log_stats = {**{f'train_{k}': v for k, v in train_stats.items()},
+                             'epoch': epoch,
+                             'n_parameters': n_parameters}
+            else:
+                log_stats = {**{f'train_{k}': v for k, v in train_stats.items()},
+                             'epoch': epoch,
+                             'n_parameters': n_parameters}
+
+            if args.output_dir and utils.is_main_process():
+                with (output_dir / "log.txt").open("a") as f:
+                    f.write(json.dumps(log_stats) + "\n")
+    except KeyboardInterrupt as e:
+        warn(f"Keyboard Interrupt caught!")
+        warn(f"Logging hyperparameters and doing a final test run ...")
+        pass
+    except Exception as e:
+        err(f"Exception during training: {e}")
+        traceback.print_exc()
+        err("Exiting program ...")
+
+    test_total_time_str = ""
+    if args.test_set is not None:
+        print('Test final trained model')
+        test_start_time = time.time()
+
+        # Switch mode of evaluator to "testing" for tensorboard logging
+        pose_evaluator.testing = True
+        dataset_test = build_dataset(image_set=args.test_set, args=args)
+        sampler_test = torch.utils.data.SequentialSampler(dataset_test)
+        data_loader_test = DataLoader(dataset_test, args.eval_batch_size, sampler=sampler_test,
+                                      drop_last=False, collate_fn=utils.collate_fn, num_workers=args.num_workers,
+                                      pin_memory=True)
+
+        avg_trans_err, avg_rot_err = pose_evaluate(model, matcher, pose_evaluator, data_loader_test, args.test_set, args.bbox_mode,
+                      args.rotation_representation, device, str(output_dir), epoch)
+
+        writer.add_scalar("Test/avg_trans_err", avg_trans_err, epoch)
+        writer.add_scalar("Test/avg_rot_err", avg_rot_err, epoch)
+
+        test_total_time = time.time() - test_start_time
+        test_total_time_str = str(datetime.timedelta(seconds=int(test_total_time)))
+        print('Testing time {}'.format(test_total_time_str))
+    else:
+        print("Cannot test model because args.test_set is None! Skipping testing ...")
 
     # Log Hyperparameters
     writer.add_hparams(
       {
-        "Batch Size": args.eval_batch_size,
-        "Eval Batch Size": args.eval_batch_size,
-        "Learning Rate": args.lr,
-        "Transl. Loss Coef.": args.translation_loss_coef,
-        "Rot. Loss Coef.": args.rotation_loss_coef,
-        "Enc. Layers": args.enc_layers,
-        "Dec. Layers": args.dec_layers,
-        "Number Heads": args.nheads,
-        "Number Object Queries": args.num_queries,
-        "RGB Augmentation": args.rgb_augmentation,
-        "Grayscale Augmentation": args.grayscale,
+          "Batch Size": args.eval_batch_size,
+          "Eval Batch Size": args.eval_batch_size,
+          "Learning Rate": args.lr,
+          "Transl. Loss Coef.": args.translation_loss_coef,
+          "Rot. Loss Coef.": args.rotation_loss_coef,
+          "Enc. Layers": args.enc_layers,
+          "Dec. Layers": args.dec_layers,
+          "Number Heads": args.nheads,
+          "Number Object Queries": args.num_queries,
+          "RGB Augmentation": args.rgb_augmentation,
+          "Grayscale Augmentation": args.grayscale,
       },
       {
-          "rot_err": log_stats["train_rotation_loss"],
-          # "trans_err": log_stats["train_loss_trans"],
-          "pos_err": log_stats["train_position_loss"],
-          "loss": log_stats["train_loss"],
+          "Test/avg_rot_err": avg_rot_err,
+          "Test/avg_trans_err": avg_trans_err,
       }
     )
+
+    writer.close()
 
     total_time = time.time() - start_time
     total_time_str = str(datetime.timedelta(seconds=int(total_time)))
     print('Training time {}'.format(total_time_str))
-    print('Evaluate final trained model')
-    eval_start_time = time.time()
-    pose_evaluate(model, matcher, pose_evaluator, data_loader_val, args.eval_set, args.bbox_mode,
-                  args.rotation_representation, device, str(output_dir))
-    eval_total_time = time.time() - eval_start_time
-    eval_total_time_str = str(datetime.timedelta(seconds=int(eval_total_time)))
-    print('Evaluation time {}'.format(eval_total_time_str))
-
     # Log execution times to file
     if args.output_dir and utils.is_main_process():
       with (output_dir / "log.txt").open("a") as f:
         obj = {
           "training_time": total_time_str,
-          "eval_total_time": eval_total_time_str,
+          "test_total_time": test_total_time_str,
         }
         f.write(json.dumps(obj) + "\n")
 
