@@ -124,7 +124,7 @@ class YOLOBackbone(Darknet):
         return predictions, out
 
 class YOLODINOBackbone(nn.Module):
-  def __init__(self, yolo_backbone=None, dino_backbone=None, class_info=None, dataset="ycbv") -> None:
+  def __init__(self, yolo_backbone=None, dino_backbone=None, class_info=None, class_mode="specific", dataset="ycbv") -> None:
     super(YOLODINOBackbone, self).__init__()
 
     assert yolo_backbone is not None
@@ -132,6 +132,8 @@ class YOLODINOBackbone(nn.Module):
 
     assert dino_backbone is not None
     self.dino_backbone = dino_backbone
+
+    self.class_mode = class_mode
 
     self.strides = self.yolo_backbone.strides
     self.num_channels = self.yolo_backbone.num_channels
@@ -164,10 +166,19 @@ class YOLODINOBackbone(nn.Module):
 
     ## TODO: REFACTORE!
     ## TODO: Implement single/multi label classification by flag
-    if dataset == "custom":
-        self.dino_caption = "object in the middle."
+    # if dataset == "custom":
+    #     self.dino_caption = "object in the middle."
+    # else:
+    #     self.dino_caption = ". ".join(list(self.map.keys()))
+
+    if class_mode == "agnostic":
+      self.dino_caption = "object in the middle."
     else:
-        self.dino_caption = ". ".join(list(self.map.keys()))
+      self.dino_caption = ". ".join(list(self.map.keys()))
+      self.dino_caption = self.dino_caption.replace("_", " ")
+
+    # self.dino_caption = ". ".join(list(self.map.keys()))
+    # self.dino_caption = self.dino_caption.replace("_", " ")
 
   def dinoPredict(self, images: torch.Tensor, caption_: str, box_threshold: float, text_threshold: float,
                   device: str = "cuda", remove_combined: bool = False) -> Tuple[
@@ -188,8 +199,8 @@ class YOLODINOBackbone(nn.Module):
 
     for idx, _ in enumerate(range(outputs["pred_boxes"].shape[0])):
       # TODO: Don't copy output to CPU
-      prediction_logits = outputs["pred_logits"][idx].cpu().sigmoid()  # prediction_logits.shape = (nq, 256)
-      prediction_boxes = outputs["pred_boxes"][idx].cpu()  # prediction_boxes.shape = (nq, 4)
+      prediction_logits = outputs["pred_logits"][idx].sigmoid()  # prediction_logits.shape = (nq, 256)
+      prediction_boxes = outputs["pred_boxes"][idx]  # prediction_boxes.shape = (nq, 4)
 
       mask = prediction_logits.max(dim=1)[0] > box_threshold
       logits = prediction_logits[mask]  # logits.shape = (n, 256)
@@ -239,6 +250,7 @@ class YOLODINOBackbone(nn.Module):
 
     # [bbox, score, label]
     images = self.normalizeImages(tensor_list.tensors)
+    # TODO: Don't copy to cpu!
     raw_images = tensor_list.tensors.cpu().numpy()
 
     predictions = []
@@ -250,8 +262,8 @@ class YOLODINOBackbone(nn.Module):
       # Unnormalize bboxes
       # Predicted boxes are in normalized "cxcywh" format!!
       h, w, _ = image.shape  # h, w, c
-      boxes = boxes * torch.Tensor([w, h, w, h])
-      # PoET expects xyxy format (later it will be converted back to cxcywh)
+      boxes = boxes * torch.Tensor([w, h, w, h]).to("cuda")
+      # PoET expects xyxy format, later in "pose_estimation_transformer.py it will be converted back to (normalized) cxcywh
       boxes = box_convert(boxes, "cxcywh","xyxy")
 
       ################################
@@ -273,21 +285,26 @@ class YOLODINOBackbone(nn.Module):
       if not len(boxes) == 0:
         p = []
         for box, logits, label in zip(boxes, logits, phrases):
-          label_vec = self.vectorizer.transform([label])
-          cos_sim = cosine_similarity(label_vec, self.tfidf).flatten()
+          pred = None
+          if self.class_mode == "specific":
+            label_vec = self.vectorizer.transform([label])
+            cos_sim = cosine_similarity(label_vec, self.tfidf).flatten()
 
-          # TODO: Refactor threshold
-          if all(v <= 0.1 for v in cos_sim):  # If not a single label matches 30% of pred label
-            continue
+            ## TODO: Refactore threshold
+            if all(v <= 0.1 for v in cos_sim):  # If not a single label matches 10% of pred label
+              continue
 
-          best_match_idx = np.argmax(cos_sim)
-          best_match = list(self.map.keys())[best_match_idx]
-          cls = self.map[best_match]
+            best_match_idx = np.argmax(cos_sim)
+            best_match = list(self.map.keys())[best_match_idx]
+            cls = self.map[best_match]
 
-          pred = torch.hstack((box, logits, torch.tensor(cls))).to("cuda")
+            pred = torch.hstack((box, logits, torch.tensor(cls).to("cuda")))
+          else:
+            pred = torch.hstack((box, logits, torch.tensor(-1).to("cuda")))
           p.append(pred)
 
-        if len(p) != 0:  # Only stack valid found predictions
+        # If all predictions were below label matching threshold
+        if len(p) != 0:
           p = torch.stack(p)
           predictions.append(p)
         else:
@@ -332,6 +349,7 @@ class NestedTensor(object):
 
 
 def build_yolo_dino(args):
+    ## TODO: Refactor Paths!!!
     args_dino = SLConfig.fromfile("/home/sebastian/repos/GroundingDINO/groundingdino/config/GroundingDINO_SwinT_OGC.py")
     args_dino.device = "cuda"
     dino = build_groundingdino(args_dino)
@@ -351,5 +369,5 @@ def build_yolo_dino(args):
             load_darknet_weights(cns_yolo, args.backbone_weights)
 
 
-    yolo_dino = YOLODINOBackbone(yolo_backbone=cns_yolo, dino_backbone=dino, class_info=args.dataset_path + args.class_info, dataset=args.dataset)
+    yolo_dino = YOLODINOBackbone(yolo_backbone=cns_yolo, dino_backbone=dino, class_info=args.dataset_path + args.class_info, class_mode=args.class_mode, dataset=args.dataset)
     return yolo_dino
