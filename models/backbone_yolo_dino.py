@@ -30,8 +30,6 @@ from util.misc import NestedTensor
 import supervision as sv
 import cv2
 
-ONNX_EXPORT = False
-
 
 class YOLOBackbone(Darknet):
     """
@@ -125,9 +123,12 @@ class YOLOBackbone(Darknet):
             out[name] = NestedTensor(x, mask)
         return predictions, out
 
+
 class YOLODINOBackbone(nn.Module):
-  def __init__(self, yolo_backbone=None, dino_backbone=None, class_info=None, class_mode="specific", dataset="ycbv") -> None:
+  def __init__(self, yolo_backbone=None, dino_backbone=None, class_info=None, class_mode="specific", dataset="ycbv", device="cuda") -> None:
     super(YOLODINOBackbone, self).__init__()
+
+    self.device = device
 
     assert yolo_backbone is not None
     self.yolo_backbone = yolo_backbone
@@ -166,41 +167,29 @@ class YOLODINOBackbone(nn.Module):
     self.vectorizer = TfidfVectorizer()
     self.tfidf = self.vectorizer.fit_transform(self.map.keys())
 
-    ## TODO: REFACTORE!
-    ## TODO: Implement single/multi label classification by flag
-    # if dataset == "custom":
-    #     self.dino_caption = "object in the middle."
-    # else:
-    #     self.dino_caption = ". ".join(list(self.map.keys()))
-
+    ## TODO: Refactore single label classification caption for dino
     if class_mode == "agnostic":
       self.dino_caption = "object in the middle."
     else:
       self.dino_caption = ". ".join(list(self.map.keys()))
       self.dino_caption = self.dino_caption.replace("_", " ")
 
-    # self.dino_caption = ". ".join(list(self.map.keys()))
-    # self.dino_caption = self.dino_caption.replace("_", " ")
-
   def dinoPredict(self, images: torch.Tensor, caption_: str, box_threshold: float, text_threshold: float,
-                  device: str = "cuda", remove_combined: bool = False) -> Tuple[
-    torch.Tensor, torch.Tensor, List[str]]:
+                  remove_combined: bool = False) -> Tuple[torch.Tensor, torch.Tensor, List[str]]:
 
     # TODO: Integrate "phrase" mode of groundingdino! (inference_on_an_image.py)
-
     # "preprocess_caption()"
     caption = caption_.lower().strip()
     if not caption.endswith("."):
       caption = caption + "."
 
-    model = self.dino_backbone.to(device)
-    images = images.to(device)
+    model = self.dino_backbone.to(self.device)
+    images = images.to(self.device)
 
     with torch.no_grad():
       outputs = model(images, captions=[caption for _ in range(len(images))])
 
     for idx, _ in enumerate(range(outputs["pred_boxes"].shape[0])):
-      # TODO: Don't copy output to CPU
       prediction_logits = outputs["pred_logits"][idx].sigmoid()  # prediction_logits.shape = (nq, 256)
       prediction_boxes = outputs["pred_boxes"][idx]  # prediction_boxes.shape = (nq, 4)
 
@@ -252,20 +241,17 @@ class YOLODINOBackbone(nn.Module):
 
     # [bbox, score, label]
     images = self.normalizeImages(tensor_list.tensors)
-    # TODO: Don't copy to cpu!
-    raw_images = tensor_list.tensors.cpu().numpy()
+    raw_images = tensor_list.tensors
 
     predictions = []
     for idx, (boxes, logits, phrases) in enumerate(
         self.dinoPredict(images=images, caption_=self.dino_caption, box_threshold=0.35, text_threshold=0.25)):
       image = raw_images[idx]
-      image = np.moveaxis(image, 0, 2)  # transform (c, h, w) to (h, w, c) (put rgb channel at the end)
 
-      # Unnormalize bboxes
-      # Predicted boxes are in normalized "cxcywh" format!!
-      h, w, _ = image.shape  # h, w, c
-      boxes = boxes * torch.Tensor([w, h, w, h]).to("cuda")
-      # PoET expects xyxy format, later in "pose_estimation_transformer.py it will be converted back to (normalized) cxcywh
+      # Unnormalize bboxes (Predicted bboxes are in normalized "cxcywh" format!!)
+      _, h, w = image.shape  # h, w, c
+      boxes = boxes * torch.Tensor([w, h, w, h]).to(self.device)
+      # PoET expects xyxy format, later in "pose_estimation_transformer.py" it will be converted back to (normalized) cxcywh
       boxes = box_convert(boxes, "cxcywh","xyxy")
 
       ################################
@@ -305,7 +291,7 @@ class YOLODINOBackbone(nn.Module):
             pred = torch.hstack((box, logits, torch.tensor(-1).to("cuda")))
           p.append(pred)
 
-        # If all predictions were below label matching threshold
+        # If all predictions are below label matching threshold
         if len(p) != 0:
           p = torch.stack(p)
           predictions.append(p)
@@ -314,49 +300,14 @@ class YOLODINOBackbone(nn.Module):
       else:
         predictions.append(None)
 
-    # out: Dict[str, NestedTensor] = {}
-    # for name, x in xs.items():
-    #   m = tensor_list.mask
-    #   assert m is not None
-    #   mask = F.interpolate(m[None].float(), size=x.shape[-2:]).to(torch.bool)[0]
-    #   out[name] = NestedTensor(x, mask)
     return predictions, out
-
-class NestedTensor(object):
-    def __init__(self, tensors, mask: Optional[Tensor]):
-        self.tensors = tensors
-        self.mask = mask
-
-    def to(self, device, non_blocking=False):
-        # type: (Device) -> NestedTensor # noqa
-        cast_tensor = self.tensors.to(device, non_blocking=non_blocking)
-        mask = self.mask
-        if mask is not None:
-            assert mask is not None
-            cast_mask = mask.to(device, non_blocking=non_blocking)
-        else:
-            cast_mask = None
-        return NestedTensor(cast_tensor, cast_mask)
-
-    def record_stream(self, *args, **kwargs):
-        self.tensors.record_stream(*args, **kwargs)
-        if self.mask is not None:
-            self.mask.record_stream(*args, **kwargs)
-
-    def decompose(self):
-        return self.tensors, self.mask
-
-    def __repr__(self):
-        return str(self.tensors)
-
 
 def build_yolo_dino(args):
     ## TODO: Refactor Paths! Provide them via args!
-    # args_dino = SLConfig.fromfile("/home/sebastian/repos/GroundingDINO/groundingdino/config/GroundingDINO_SwinT_OGC.py")
     args_dino = SLConfig.fromfile(os.path.join(ROOT_DIR, "models/groundingdino/config/GroundingDINO_SwinT_OGC.py"))
     args_dino.device = "cuda"
     dino = build_groundingdino(args_dino)
-    # checkpoint = torch.load("/home/sebastian/repos/GroundingDINO/weights/groundingdino_swint_ogc.pth", map_location="cpu")
+
     checkpoint = torch.load(os.path.join(ROOT_DIR, "models/groundingdino/weights/groundingdino_swint_ogc.pth"), map_location="cpu")
     dino.load_state_dict(clean_state_dict(checkpoint["model"]), strict=False)
     dino.eval()
@@ -372,5 +323,6 @@ def build_yolo_dino(args):
             load_darknet_weights(cns_yolo, args.backbone_weights)
 
 
-    yolo_dino = YOLODINOBackbone(yolo_backbone=cns_yolo, dino_backbone=dino, class_info=args.dataset_path + args.class_info, class_mode=args.class_mode, dataset=args.dataset)
+    yolo_dino = YOLODINOBackbone(yolo_backbone=cns_yolo, dino_backbone=dino, class_info=args.dataset_path + args.class_info,
+                                 class_mode=args.class_mode, dataset=args.dataset, device=args.device)
     return yolo_dino

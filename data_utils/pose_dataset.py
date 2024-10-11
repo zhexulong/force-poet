@@ -199,8 +199,6 @@ class ProcessPoseData(object):
             intrinsics = [obj['intrinsics'] for obj in anno]
             intrinsics = torch.as_tensor(intrinsics, dtype=torch.float32)
 
-        ## TODO: Refactore because custom dataset doesnt have boxes
-        #keep = True
         keep = (boxes[:, 3] > boxes[:, 1]) & (boxes[:, 2] > boxes[:, 0])
         boxes = boxes[keep]
         classes = classes[keep]

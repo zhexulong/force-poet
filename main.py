@@ -34,9 +34,7 @@ from inference_tools.inference_engine import inference
 from tabulate import tabulate
 
 from util.logger import warn, err
-
 from CorrectedSummaryWriter import CorrectedSummaryWriter
-
 
 def get_args_parser():
 
@@ -364,7 +362,7 @@ def main(args):
         missing_keys, unexpected_keys = model_without_ddp.load_state_dict(checkpoint['model'], strict=False)
         unexpected_keys = [k for k in unexpected_keys if not (k.endswith('total_params') or k.endswith('total_ops'))]
         if len(missing_keys) > 0:
-            warn("There are {len(missing_keys)} missing keys in state_dict!")
+            warn(f"There are {len(missing_keys)} missing keys in state_dict!")
             # print('Missing Keys: {}'.format(missing_keys))
         if len(unexpected_keys) > 0:
             warn(f"There are {len(unexpected_keys)} unexpected keys in state_dict!")
