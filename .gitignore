@@ -9,3 +9,7 @@
 output*/
 input*/
 eval*/
+
+*.jpg
+*.png
+.vscode
