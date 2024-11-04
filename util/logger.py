@@ -22,7 +22,7 @@ def info(msg):
   print(f"[INFO] {msg}")
 
 def succ(msg):
-  print(f"{GREEN}[WARN]{RESET} {msg}")
+  print(f"{GREEN}[SUCC]{RESET} {msg}")
 
 def warn(msg):
   print(f"{YELLOW}[WARN]{RESET} {msg}")
