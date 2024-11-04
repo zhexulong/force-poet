@@ -86,8 +86,8 @@ def inference(args):
     results = {}
 
     # Create inference output folder structure
-    if not os.path.exists(args.inference_output):
-        Path(args.inference_output + "bbox/").mkdir(parents=True, exist_ok=True)
+    if not os.path.exists(os.path.join(args.inference_output, "bbox/")):
+        Path(os.path.join(args.inference_output, "bbox/")).mkdir(parents=True, exist_ok=True)
 
     # Store the args file
     out_file_name = "args.txt"
