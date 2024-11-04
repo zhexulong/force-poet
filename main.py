@@ -429,31 +429,19 @@ def main(args):
 
             lr_scheduler.step()
             if args.output_dir:
-                # checkpoint_paths = [output_dir / 'checkpoint.pth']
+                checkpoint_paths = [output_dir / 'checkpoint_latest.pth']
+                # extra checkpoint before LR drop and every save_interval epochs
+                if (epoch + 1) % args.lr_drop == 0 or (epoch + 1) % args.save_interval == 0:
+                    checkpoint_paths.append(output_dir / f'checkpoint{epoch:04}.pth')
 
-                # extra checkpoint before LR drop and every 5 epochs
-                # if (epoch + 1) % args.lr_drop == 0 or (epoch + 1) % args.save_interval == 0:
-                #     checkpoint_paths.append(output_dir / f'checkpoint{epoch:04}.pth')
-
-                # for checkpoint_path in checkpoint_paths:
-                utils.save_on_master({
-                    'model': model_without_ddp.state_dict(),
-                    'optimizer': optimizer.state_dict(),
-                    'lr_scheduler': lr_scheduler.state_dict(),
-                    'epoch': epoch,
-                    'args': args,
-                }, output_dir / f'checkpoint{epoch:04}.pth')
-
-                if train_stats['loss'] < best_loss:
-                  # checkpoint_paths.append(output_dir / f'checkpoint{epoch:04}.pth')
-                  best_loss = train_stats['loss']
-                  utils.save_on_master({
-                    'model': model_without_ddp.state_dict(),
-                    'optimizer': optimizer.state_dict(),
-                    'lr_scheduler': lr_scheduler.state_dict(),
-                    'epoch': epoch,
-                    'args': args,
-                  }, 'checkpoint.pth')
+                for checkpoint_path in checkpoint_paths:
+                    utils.save_on_master({
+                        'model': model_without_ddp.state_dict(),
+                        'optimizer': optimizer.state_dict(),
+                        'lr_scheduler': lr_scheduler.state_dict(),
+                        'epoch': epoch,
+                        'args': args,
+                    }, checkpoint_path)
 
             writer.add_scalar('Train/lr', train_stats["lr"], epoch)
             writer.add_scalar('Train/loss', train_stats["loss"], epoch)
@@ -476,6 +464,19 @@ def main(args):
                 avg_trans_err, avg_rot_err = pose_evaluate(model, matcher, pose_evaluator, data_loader_val, args.eval_set, args.bbox_mode,
                               args.rotation_representation, device, str(output_dir), epoch)
 
+                # Save model if best translation and rotation result
+                if args.output_dir:
+                    checkpoint_loss = (avg_trans_err + avg_rot_err) / 2
+                    if checkpoint_loss < best_loss:
+                        best_loss = checkpoint_loss
+                        utils.save_on_master({
+                            'model': model_without_ddp.state_dict(),
+                            'optimizer': optimizer.state_dict(),
+                            'lr_scheduler': lr_scheduler.state_dict(),
+                            'epoch': epoch,
+                            'args': args,
+                        }, output_dir / 'checkpoint.pth')
+
                 writer.add_scalar("Val/avg_trans_err", avg_trans_err, epoch)
                 writer.add_scalar("Val/avg_rot_err", avg_rot_err, epoch)
 
@@ -490,6 +491,7 @@ def main(args):
             if args.output_dir and utils.is_main_process():
                 with (output_dir / "log.txt").open("a") as f:
                     f.write(json.dumps(log_stats) + "\n")
+
     except KeyboardInterrupt as e:
         warn(f"Keyboard Interrupt caught!")
         warn(f"Logging hyperparameters and doing a final test run ...")
