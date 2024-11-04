@@ -62,9 +62,9 @@ class PoseDataset(CocoDetection):
         img, target = super(PoseDataset, self).__getitem__(idx)
         image_id = self.ids[idx]
         target = {'image_id': image_id, 'annotations': target}
-        img, target = self.prepare(img, target)
+        img, target = self.prepare(img, target) # Transforms bbox from xywh to xyxy
         if self._transforms is not None:
-            img, target = self._transforms(img, target)  # Transforms bbox from un-normalized xyxy to normalized cxcywh
+            img, target = self._transforms(img, target)  # Transforms bbox from un-normalized xyxy to normalized cxcywh (transforms.py 341)
 
         if self.jitter:
             # For the bounding box center we sample from a truncated normal distribution limited by the bounding box
@@ -126,6 +126,7 @@ class ProcessPoseData(object):
         boxes = [obj["bbox"] for obj in anno]
         # guard against no boxes via resizing
         boxes = torch.as_tensor(boxes, dtype=torch.float32).reshape(-1, 4)
+        # Transform xywh to xyxy
         boxes[:, 2:] += boxes[:, :2]
         boxes[:, 0::2].clamp_(min=0, max=w)
         boxes[:, 1::2].clamp_(min=0, max=h)

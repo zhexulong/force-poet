@@ -338,7 +338,8 @@ class PoET(nn.Module):
 
         # srcs = feature maps from the backbone
         # pos = feature-level position embeddings (in which feature level does each query pixel (value) lie in)
-        # reference_points = either bbox center coordinates from backbone or learned during training. Specifies where attention module in Deformable DETR attends object queries around ("Where to search for objects?").
+        # reference_points = object queries = either bbox center coordinates from backbone or learned during training.
+        #                    Specifies where attention module in Deformable DETR "searches" for objects).
 
         # hs = hidden states for each decoding layer
         hs, init_reference, _, _, _ = self.transformer(srcs, masks, pos, query_embeds, reference_points)
@@ -353,6 +354,7 @@ class PoET(nn.Module):
         for lvl in range(hs.shape[0]):
             output_rotation = self.rotation_head[lvl](hs[lvl])  # (bs, n_queries, (n_classes + 1) * 6) => "6D rotation representation"; n_classes + 1 because of "background"/"no prediction"
             output_translation = self.translation_head[lvl](hs[lvl])  # (bs, n_queries, (n_classes + 1) * 3) "3D translation representation";
+            # If class mode specific, select predicted rotation & translation according to predicted class from backbone
             if self.class_mode == 'specific':
                 # Select the correct output according to the predicted class in the class-specific mode
                 output_rotation = output_rotation.view(bs * self.n_queries, self.n_classes, -1)
