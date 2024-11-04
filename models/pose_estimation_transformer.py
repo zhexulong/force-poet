@@ -356,15 +356,30 @@ class PoET(nn.Module):
             output_translation = self.translation_head[lvl](hs[lvl])  # (bs, n_queries, (n_classes + 1) * 3) "3D translation representation";
             # If class mode specific, select predicted rotation & translation according to predicted class from backbone
             if self.class_mode == 'specific':
-                # Select the correct output according to the predicted class in the class-specific mode
+                # reshape rotation output for later indexing by class
                 output_rotation = output_rotation.view(bs * self.n_queries, self.n_classes, -1)
-                output_rotation = torch.cat([query[output_idx[i], :] for i, query in enumerate(output_rotation)]).view(
-                    bs, self.n_queries, -1)
+                # output_rotation = torch.cat([query[output_idx[i], :] for i, query in enumerate(output_rotation)]).view(
+                #     bs, self.n_queries, -1)
 
+                # Select the correct output according to the predicted class in the class-specific mode
+                selected_rotations = []
+                for i, query in enumerate(output_rotation):
+                    # print(f"Query {i} output_idx: {output_idx[i]}, selected rotation: {query[output_idx[i], :]}")
+                    selected_rotations.append(query[output_idx[i], :])
+                output_rotation = torch.cat(selected_rotations).view(bs, self.n_queries, -1)  # (bs, n_queries, 6) => "6D representation of rotation"
+
+                # reshape translation output for later indexing by class
                 output_translation = output_translation.view(bs * self.n_queries, self.n_classes, -1)
-                output_translation = torch.cat(
-                    [query[output_idx[i], :] for i, query in enumerate(output_translation)]).view(bs, self.n_queries,
-                                                                                                  -1)
+                # output_translation = torch.cat(
+                #     [query[output_idx[i], :] for i, query in enumerate(output_translation)]).view(bs, self.n_queries,
+                #                                                                                   -1)
+
+                # Select translation for the predicted class
+                selected_translations = []
+                for i, query in enumerate(output_translation):
+                    # print(f"Query {i} output_idx: {output_idx[i]}, selected translation: {query[output_idx[i], :]}")
+                    selected_translations.append(query[output_idx[i], :])
+                output_translation = torch.cat(selected_translations).view(bs, self.n_queries, -1)  # (bs, n_queries, 3)
 
             # transform 6D rotation representation to 3x3 rotation matrix (or quaternion)
             output_rotation = self.process_rotation(output_rotation)
