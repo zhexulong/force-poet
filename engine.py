@@ -22,8 +22,11 @@ import datetime
 from pathlib import Path
 from typing import Iterable
 
+import cv2
 import numpy as np
 import torch
+from matplotlib import pyplot as plt
+
 import util.misc as utils
 from util.quaternion_ops import quat2rot
 from data_utils.data_prefetcher import data_prefetcher
@@ -93,6 +96,36 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
     return {k: meter.global_avg for k, meter in metric_logger.meters.items()}
 
 
+# Function to convert normalized bounding box to un-normalized pixel values
+def convert_to_pixel_values(img_width, img_height, bbox):
+  cx, cy, w, h = bbox
+  x_min = int((cx - w / 2) * img_width)
+  y_min = int((cy - h / 2) * img_height)
+  width = int(w * img_width)
+  height = int(h * img_height)
+  return x_min, y_min, width, height
+
+
+# Function to visualize bounding boxes on a single image
+def visualize_bounding_boxes(image, pred_bboxes, gt_bboxes, pred_classes, gt_classes):
+  img_height, img_width = image.shape[:2]
+
+  # Draw predicted bounding boxes in red
+  for idx, bbox in enumerate(pred_bboxes):
+    x_min, y_min, width, height = convert_to_pixel_values(img_width, img_height, bbox)
+    image = cv2.rectangle(image, (x_min, y_min), (x_min + width, y_min + height), (0, 255, 0), 1)
+    text_position = (x_min, y_min + height + 15)  # Positioned below the bbox
+    image = cv2.putText(image, f'pred: {pred_classes[idx]}', text_position, cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1, cv2.LINE_AA)
+
+  # Draw ground truth bounding boxes in green
+  for idx, bbox in enumerate(gt_bboxes):
+    x_min, y_min, width, height = convert_to_pixel_values(img_width, img_height, bbox)
+    image = cv2.rectangle(image, (x_min, y_min), (x_min + width, y_min + height), (255, 0, 0), 1)
+    text_position = (x_min, y_min - 10)  # Positioned above the bbox
+    image = cv2.putText(image, f'gt: {gt_classes[idx]}', text_position, cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 1, cv2.LINE_AA)
+
+  return image
+
 @torch.no_grad()
 def pose_evaluate(model, matcher, pose_evaluator, data_loader, image_set, bbox_mode, rotation_mode, device, output_dir, epoch=None):
     """
@@ -120,7 +153,38 @@ def pose_evaluate(model, matcher, pose_evaluator, data_loader, image_set, bbox_m
         batch_start_time = time.time()
         samples = samples.to(device)
         targets = [{k: v.to(device) for k, v in t.items()} for t in targets]
-        outputs, n_boxes_per_sample = model(samples, targets)
+        outputs, n_boxes_per_sample = model(samples, targets)  # bbox format: cxcywh (unnormalized)
+
+        # TODO: Refactor case of no prediction(s)
+        if outputs == None:
+            continue
+
+        # Visualize and save bounding boxes
+        # for i in range(samples.tensors.shape[0]):
+        #   image_tensor = samples.tensors[i]
+        #   image_np = image_tensor.permute(1, 2, 0).cpu().numpy()  # Convert to HxWxC format
+        #   image_np = np.clip(image_np * 255, 0, 255).astype(np.uint8)
+        #   image_cv = cv2.cvtColor(image_np, cv2.COLOR_RGB2BGR)
+        #
+        #   pred_bboxes = outputs["pred_boxes"][i]  # Get predicted bounding boxes for this image
+        #   gt_bboxes = targets[i]["boxes"]  # Get ground truth bounding boxes for this image
+        #
+        #   pred_classes = outputs["pred_classes"][i]
+        #   gt_classes = targets[i]["labels"]
+        #
+        #   # Visualize bounding boxes
+        #   image_with_boxes = visualize_bounding_boxes(image_cv, pred_bboxes, gt_bboxes, pred_classes, gt_classes)
+        #
+        #   # Display the image
+        #   plt.figure(figsize=(6, 6))
+        #   plt.imshow(image_with_boxes)
+        #   plt.axis('off')
+        #   # plt.show()
+        #
+        #   if not os.path.exists(os.path.join(output_eval_dir, "bbox/")):
+        #     os.makedirs(os.path.join(output_eval_dir, "bbox/"))
+        #   plt.savefig(os.path.join(output_eval_dir, "bbox/", f"{targets[i]['image_id'].item()}.png"), bbox_inches="tight")
+
         outputs_without_aux = {k: v for k, v in outputs.items() if k != 'aux_outputs' and k != 'enc_outputs'}
 
         # Extract final predictions and store them
