@@ -13,3 +13,5 @@ eval*/
 *.jpg
 *.png
 .vscode
+
+project/dataset/*
