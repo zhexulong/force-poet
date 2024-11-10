@@ -1,8 +1,19 @@
+import sys
+import os
+
+# Add the parent directory to sys.path, otherwise 'logger' from 'util' will be not found
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+
 import torch
+from util import logger
+from models import build_model
 import time
+import os
 import supervision as sv
 import numpy as np
-import os
+from helper import Args, controls
+from PIL import Image
+
 import av
 import cv2
 import numpy
@@ -11,13 +22,12 @@ import tellopy
 import pygame
 import pygame.locals
 import threading
-import logging
 import rospy
 from geometry_msgs.msg import PoseStamped
 
-from util import logger
-from models import build_model
-from helper import Args, controls
+import warnings
+
+warnings.filterwarnings("ignore", category=DeprecationWarning)
 
 
 def mean_translation(data):
@@ -127,9 +137,11 @@ class InferenceEngine:
             logger.err("Given image has not required size (640, 480)!")
             return None
 
-        frame = np.moveaxis(frame, 2, 0)
+        frame_orig = frame
+        # PoET expects input in (bs, c, h, w) format!
+        frame = np.moveaxis(frame, 2, 0) #(c, h, w)
 
-        frame = np.expand_dims(frame, axis=0)  # Add dimension in the front for list of tensors
+        frame = np.expand_dims(frame, axis=0)  # Add dimension in the front for list of tensors -> (1, c, h, w)
         frame = torch.from_numpy(frame).to(self.device).float()
 
         start_ = time.time()
@@ -151,29 +163,30 @@ class InferenceEngine:
             return None
 
         # Iterate over all the detected predictions
-        result = {}
+        result = []
         for d in range(n_boxes_per_sample[0]):
-            pred_t = outputs['pred_translation'][0][d].detach().cpu().tolist()
-            pred_rot = outputs['pred_rotation'][0][d].detach().cpu().tolist()
-            pred_box = outputs['pred_boxes'][0][d].detach().cpu().tolist()
-            pred_class = outputs['pred_classes'][0][d].detach().cpu().tolist()
+            pred_t = np.array(outputs['pred_translation'][0][d].detach().cpu().tolist())
+            pred_rot = np.array(outputs['pred_rotation'][0][d].detach().cpu().tolist())
+            pred_box = np.array(outputs['pred_boxes'][0][d].detach().cpu().tolist())
+            pred_class = np.array(outputs['pred_classes'][0][d].detach().cpu().tolist())
 
             R, t = self.transform_to_cam(pred_rot, pred_t)
 
-            result[d] = {
+            result.append({
                 "t": t,
                 "rot": R,
                 "box": pred_box,  # format: cxcywh
-                "class": pred_class,
-            }
+                "class": pred_class
+            })
 
             if self.draw:
                 # Draw predicted bounding box
                 detections = sv.Detections(
                     xyxy=np.array([self.transform_bbox(pred_box, (640, 480))]))  # transform normalized cxcywh to xyxy
                 box_annotator = sv.BoxAnnotator()
-                annotated_frame = box_annotator.annotate(scene=frame, detections=detections)
-                result[d]["img"] = annotated_frame
+                img = Image.fromarray(frame_orig)
+                annotated_frame = box_annotator.annotate(scene=img, detections=detections)
+                result[d]["img"] = np.array(annotated_frame)
 
         if not result: return None
 
@@ -261,9 +274,9 @@ def image_thread(image_display: pygame.Surface, container):
             frame_skip = frame_skip - 1
             continue
 
-        if counter % 10:
-            counter += 1
-            continue
+        # if counter % 10:
+        #   counter += 1
+        #   continue
 
         counter += 1
 
@@ -274,11 +287,18 @@ def image_thread(image_display: pygame.Surface, container):
         # store_img(frame_glob, frame_number)
         frame_number += 1
 
-        # display image
-        display_img(frame_glob, image_display)
-
         gt = GroundTruth(np.array([0, 0, 0]), np.array([[0, 0, 0], [0, 0, 0], [0, 0, 0]]))
-        engine.inference(frame_glob, gt)
+        res = None
+        try:
+            res = engine.inference(frame_glob, gt)
+        except Exception as error:
+            logger.warn(error.with_traceback())
+
+        # display image
+        if res and res[0] and "img" in res[0]:
+            display_img(res[0]["img"], image_display)
+        else:
+            display_img(frame_glob, image_display)
 
         # we want to skip the frames since the last processed frame in order to avoid delay
         if frame.time_base < 1.0 / 60:
@@ -349,6 +369,7 @@ if __name__ == "__main__":
     # pygame.display.set_icon(icon)
 
     drone = tellopy.Tello()
+    drone.set_loglevel(1)  # log level WARN
     speed = 30
 
     try:
