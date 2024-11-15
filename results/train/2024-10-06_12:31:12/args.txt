@@ -1,0 +1,47 @@
+╭─────────────────────┬────────────────────────────────────────────┬───────────────────────────────────────────────────────────────────────────────╮
+│ Argument            │ Value                                      │ Description                                                                   │
+├─────────────────────┼────────────────────────────────────────────┼───────────────────────────────────────────────────────────────────────────────┤
+│ Flags               │                                            │                                                                               │
+│ Inference           │ False                                      │                                                                               │
+│ Eval                │ False                                      │                                                                               │
+│ Eval BOP            │ False                                      │                                                                               │
+│ Distributed         │ False                                      │                                                                               │
+│ RGB Augm.           │ True                                       │ Whether to augment training images with RGB transformations.                  │
+│ Grayscale Augm.     │ True                                       │ Whether to augment training images with Grayscale transformations.            │
+│                     │                                            │                                                                               │
+│ Architecture        │                                            │                                                                               │
+│ Enc. Layers         │ 5                                          │                                                                               │
+│ Dec. Layers         │ 5                                          │                                                                               │
+│ Num. Heads          │ 16                                         │                                                                               │
+│ Num. Object Queries │ 10                                         │ Number of object queries per image. (Numb. of objects hypothesises per image) │
+│                     │                                            │                                                                               │
+│ Resume              │                                            │ Model checkpoint to resume training of.                                       │
+│ Backbone            │ dinoyolo                                   │                                                                               │
+│ BBox Mode           │ backbone                                   │                                                                               │
+│ Dataset             │ custom                                     │                                                                               │
+│ Dataset Path        │ /media/sebastian/TEMP/poet/datasets/custom │                                                                               │
+│ N Classes           │ 16                                         │ Number of total classes/labels.                                               │
+│ Class Mode          │ agnostic                                   │                                                                               │
+│ Rot. Reprs.         │ 6d                                         │                                                                               │
+│                     │                                            │                                                                               │
+│ Training            │                                            │                                                                               │
+│ Train Set           │ train                                      │                                                                               │
+│ Batch Size          │ 16                                         │                                                                               │
+│ Epochs              │ 50                                         │                                                                               │
+│ Learning Rate       │ 3.5e-05                                    │                                                                               │
+│ LR. Drop            │ 50                                         │ Decays learning rate all 'LR. Drop' epochs by multiplicative of 'Gamma'       │
+│ Gamma               │ 0.1                                        │ Multiplicative factor of learning rate drop                                   │
+│ Transl. Loss Coef.  │ 2.0                                        │ Weighting of translation loss.                                                │
+│ Rot. Loss Coef.     │ 1.0                                        │                                                                               │
+│                     │                                            │                                                                               │
+│ Eval                │                                            │                                                                               │
+│ Eval Batch Size     │ 16                                         │                                                                               │
+│ Eval Set            │ val                                        │                                                                               │
+│                     │                                            │                                                                               │
+│ Test                │                                            │                                                                               │
+│ Test Set            │ test                                       │                                                                               │
+│                     │                                            │                                                                               │
+│ Inference           │                                            │                                                                               │
+│ Inference Path      │ None                                       │                                                                               │
+│ Inference Output    │ None                                       │                                                                               │
+╰─────────────────────┴────────────────────────────────────────────┴───────────────────────────────────────────────────────────────────────────────╯
