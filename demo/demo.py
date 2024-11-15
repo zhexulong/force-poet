@@ -14,6 +14,7 @@ import numpy as np
 from helper import Args, controls
 from PIL import Image
 from scipy.spatial.transform import Rotation
+from helper import dimensions
 
 import av
 import cv2
@@ -51,6 +52,20 @@ def mean_rotation(data):
         mean_rot_valid = np.dot(U, Vt)
 
     return mean_rot_valid
+
+def get_center_of_object(object: str):
+    """
+    Returns the center of object (in pixels) of the given object.
+    """
+    h = dimensions[object]["h"]
+    return np.array([0, 0, h / 2])
+
+def bottom_object_origin(object: str, t: np.ndarray):
+    """
+    Centers the given origin (t) of an object.
+    """
+    center = get_center_of_object(object)
+    return t - center
 
 
 class GroundTruth:
@@ -92,7 +107,9 @@ class InferenceEngine:
         return np.sqrt(np.sum(np.square((array1 - array2))))
 
     @staticmethod
-    def transform_to_cam(R: np.ndarray, t: np.ndarray):
+    def transform_to_cam(R: np.ndarray, t: np.ndarray, obj: str):
+        # TODO: Refactor Object
+        t = bottom_object_origin(object=obj, t=t)
         return R.T, np.dot(-R.T, t)
 
     @staticmethod
@@ -145,9 +162,15 @@ class InferenceEngine:
         frame = np.expand_dims(frame, axis=0)  # Add dimension in the front for list of tensors -> (1, c, h, w)
         frame = torch.from_numpy(frame).to(self.device).float()
 
+        # outputs['pred_translation'] -> (bd, n_queries, 3);
+        # outputs['pred_rotation']    -> (bs, n_queries, 3, 3)
+        # outputs['pred_boxes']       -> (bs, n_queries, 4) -> (cx, cy, w, h) normalized
         start_ = time.time()
         outputs, n_boxes_per_sample = self.model(frame, None)
         poet_time = time.time() - start_
+
+        if outputs is None:
+            return None
 
         val = False
         for i in outputs["pred_boxes"].detach().cpu().tolist():
@@ -156,11 +179,8 @@ class InferenceEngine:
                     if b != -1:
                         val = True
 
-        if not val:
+        if val == False:
             logger.warn("No prediction ...")
-            return None
-
-        if outputs is None:
             return None
 
         # Iterate over all the detected predictions
@@ -171,7 +191,8 @@ class InferenceEngine:
             pred_box = np.array(outputs['pred_boxes'][0][d].detach().cpu().tolist())
             pred_class = np.array(outputs['pred_classes'][0][d].detach().cpu().tolist())
 
-            R, t = self.transform_to_cam(pred_rot, pred_t)
+            # TODO: Refactor object
+            R, t = self.transform_to_cam(pred_rot, pred_t, "doll")
 
             result.append({
                 "t": t,
@@ -183,7 +204,7 @@ class InferenceEngine:
             if self.draw:
                 # Draw predicted bounding box
                 detections = sv.Detections(
-                    xyxy=np.array([self.transform_bbox(pred_box, (640, 480))]), class_id=np.array([0]))  # transform normalized cxcywh to xyxy
+                    xyxy=np.array([self.transform_bbox(pred_box, (w, h))]), class_id=np.array([0]))  # transform normalized cxcywh to xyxy
                 box_annotator = sv.BoundingBoxAnnotator()
                 img = Image.fromarray(frame_orig)
                 annotated_frame = box_annotator.annotate(scene=img, detections=detections)
