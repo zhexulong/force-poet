@@ -13,6 +13,7 @@ import supervision as sv
 import numpy as np
 from helper import Args, controls
 from PIL import Image
+from scipy.spatial.transform import Rotation
 
 import av
 import cv2
@@ -53,7 +54,7 @@ def mean_rotation(data):
 
 
 class GroundTruth:
-    def __init__(self, t, R):
+    def __init__(self, t: np.ndarray, R: np.ndarray):
         self.t = t
         self.R = R
 
@@ -86,12 +87,12 @@ class InferenceEngine:
         return angle_diff
 
     @staticmethod
-    def rmse_translation(array1, array2):
+    def rmse_translation(array1: np.ndarray, array2: np.ndarray):
         """Calculate the root mean square error (RMSE) between two arrays."""
         return np.sqrt(np.sum(np.square((array1 - array2))))
 
     @staticmethod
-    def transform_to_cam(R, t):
+    def transform_to_cam(R: np.ndarray, t: np.ndarray):
         return R.T, np.dot(-R.T, t)
 
     @staticmethod
@@ -182,8 +183,8 @@ class InferenceEngine:
             if self.draw:
                 # Draw predicted bounding box
                 detections = sv.Detections(
-                    xyxy=np.array([self.transform_bbox(pred_box, (640, 480))]))  # transform normalized cxcywh to xyxy
-                box_annotator = sv.BoxAnnotator()
+                    xyxy=np.array([self.transform_bbox(pred_box, (640, 480))]), class_id=np.array([0]))  # transform normalized cxcywh to xyxy
+                box_annotator = sv.BoundingBoxAnnotator()
                 img = Image.fromarray(frame_orig)
                 annotated_frame = box_annotator.annotate(scene=img, detections=detections)
                 result[d]["img"] = np.array(annotated_frame)
@@ -198,7 +199,7 @@ class InferenceEngine:
 
         if verbose:
             logger.succ(
-                f"[{self.img_id:04d}] Total: {time.time() - start_:.4f}s | PoEt: {poet_time:.4f}s | x: {t[0]} | y: {t[1]} | z : {t[2]} | RMSE (t): {t_rmse:.4f}, (R): {R_rmse:.4f}")
+                f"[{self.img_id:04d}] Total: {time.time() - start_:.4f}s | PoEt: {poet_time:.4f}s | x: {t[0]:.4f} | y: {t[1]:.4f} | z : {t[2]:.4f} | RMSE (t): {t_rmse:.4f}, (R): {R_rmse:.4f}")
 
         self.results[self.img_id] = result
         self.img_id += 1
@@ -219,13 +220,15 @@ def display_img(frame: numpy.array, display: pygame.Surface):
 
 counter: int = 0
 frame_number: int = 0
-base_path: str = "fly/"
-
-frame_glob: int = 0
+base_path: str = "demo/fly/"
 
 
-def store_pose(pose: PoseStamped):
-    global frame_number
+
+frame_glob: np.array = None
+
+last_pose: GroundTruth = None
+def store_pose(pose: PoseStamped, frame_number: int):
+    global last_pose
 
     name = "frame" + str(frame_number) + ".png"
 
@@ -233,12 +236,16 @@ def store_pose(pose: PoseStamped):
         pose.pose.position.z) + " " + str(pose.pose.orientation.x) + " " + str(pose.pose.orientation.y) + " " + str(
         pose.pose.orientation.z) + " " + str(pose.pose.orientation.w) + "\n"
 
+    t = np.array([pose.pose.position.x, pose.pose.position.y, pose.pose.position.z])
+    R = Rotation.from_quat([pose.pose.orientation.x, pose.pose.orientation.y, pose.pose.orientation.z, pose.pose.orientation.w]).as_matrix()
+    last_pose = GroundTruth(t, R)
+
     out_file = open(os.path.join(base_path, f"gt_cam.txt"), "a")
     out_file.write(line)
 
 
-def store_img(img: numpy.array, number: int):
-    if img is None: return
+def store_img(img: np.ndarray, number: int):
+    if img is None or img.size == 0: return
 
     path = f"{base_path}/imgs/"
     name = "frame" + str(number) + ".png"
@@ -251,21 +258,17 @@ def pose_thread(pose: PoseStamped):
     counter += 1
 
     if counter % 10 == 0 and frame_glob is not None:
-        print("received pose: ", counter)
-
         store_img(frame_glob, frame_number)
-        store_pose(pose)
-
-        frame_number += 1
         pose.header.frame_id = "world"
+        store_pose(pose, frame_number)
+        
 
 
 def image_thread(image_display: pygame.Surface, container):
     global frame_glob
     global frame_number
     global engine
-
-    counter = 0
+    global last_pose
 
     # skip first 300 frames in order to avoid delay
     frame_skip = 300
@@ -274,12 +277,6 @@ def image_thread(image_display: pygame.Surface, container):
             frame_skip = frame_skip - 1
             continue
 
-        # if counter % 10:
-        #   counter += 1
-        #   continue
-
-        counter += 1
-
         start_time = time.time()
 
         tmp = numpy.array(frame.to_image())
@@ -287,7 +284,12 @@ def image_thread(image_display: pygame.Surface, container):
         # store_img(frame_glob, frame_number)
         frame_number += 1
 
-        gt = GroundTruth(np.array([0, 0, 0]), np.array([[0, 0, 0], [0, 0, 0], [0, 0, 0]]))
+        gt = None
+        if last_pose == None:
+            gt = GroundTruth(np.array([0, 0, 0]), np.array([[0, 0, 0], [0, 0, 0], [0, 0, 0]]))
+        else:
+            gt = last_pose
+
         res = None
         try:
             res = engine.inference(frame_glob, gt)
@@ -348,7 +350,8 @@ if __name__ == "__main__":
     # args.lr = 0.000035
     # args.lr_drop = 50
     # args.gamma = 0.1
-    args.resume = "/home/wngicg/Desktop/repos/poet/results/train/2024-10-06_12_31_12/checkpoint.pth"
+    # args.resume = "/home/wngicg/Desktop/repos/poet/results/train/2024-10-06_12_31_12/checkpoint.pth"
+    args.resume = "/media/wngicg/USB-DATA/repos/poet/results_doll/train/2024-10-13_14_09_21/checkpoint.pth"
     args.device = "cuda"
 
     # ---------------------------------------------------------------------------------------------
