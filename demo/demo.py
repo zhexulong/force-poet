@@ -88,8 +88,8 @@ class Rotation_:
     def data(self):
         return np.array([self.x, self.y, self.z, self.w])
 
-class GroundTruth:
-    def __init__(self, t: np.ndarray, R: np.ndarray):
+class Pose:
+    def __init__(self, t: np.ndarray, R: np.ndarray, seq: int):
         self.t = Translation_(t[0], t[1], t[2])
         self.R = Rotation_(R[0], R[1], R[2], R[3])
 
@@ -162,11 +162,11 @@ class InferenceEngine:
 
         return [x1_pixel, y1_pixel, x2_pixel, y2_pixel]
 
-    def inference(self, frame_orig: np.ndarray, gt: GroundTruth, verbose: bool = True):
+    def inference(self, frame_orig: np.ndarray, gt: Pose, verbose: bool = True):
         r"""
         Args:
           frame_orig (np.ndarray): List of images to do inference on.
-          gt: (GroundTruth): Ground truth pose from tracking system.
+          gt: (Pose): Ground truth pose from tracking system.
           verbose (bool): Print runtime, results, RMSEs, etc.
         """
         global IMG_WIDTH, IMG_HEIGHT
@@ -265,7 +265,7 @@ frame_number: int = 0
 frame_glob: np.array = None
 
 
-def store_pose(pose: GroundTruth, frame: int):
+def store_pose(pose: Pose, frame: int):
     name = "frame" + str(frame) + ".png"
 
     line = name + " " + str(pose.t.x) + " " + str(pose.t.y) + " " + str(
@@ -284,7 +284,7 @@ def store_img(img: np.ndarray, frame: int):
     cv2.imwrite(os.path.join(path, name), cv2.cvtColor(img, cv2.COLOR_RGB2BGR))
 
 
-last_pose: GroundTruth = None
+last_pose: Pose = None
 counter: int = 0
 def pose_thread(pose: PoseStamped):
     """
@@ -303,9 +303,9 @@ def pose_thread(pose: PoseStamped):
         t = np.array([pose.pose.position.x, pose.pose.position.y, pose.pose.position.z])
         R = Rotation.from_quat([pose.pose.orientation.x, pose.pose.orientation.y, pose.pose.orientation.z,
                                 pose.pose.orientation.w]).as_matrix()
-        last_pose = GroundTruth(t, R)
-        
 
+        last_pose = Pose(t, R, pose.header.seq)
+        
 
 def image_thread(image_display: pygame.Surface, container):
     """
