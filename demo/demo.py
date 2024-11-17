@@ -307,6 +307,7 @@ def pose_thread(pose: PoseStamped):
         last_pose = Pose(t, R, pose.header.seq)
         
 
+pose_pub = None
 def image_thread(image_display: pygame.Surface, container):
     """
     Thread that receives and decodes the current image of the drone.
@@ -316,6 +317,7 @@ def image_thread(image_display: pygame.Surface, container):
     global engine
     global last_pose
     global IMG_WIDTH, IMG_HEIGHT
+    global pose_pub
 
     # skip first 300 frames in order to avoid delay
     frame_skip = 300
@@ -355,6 +357,23 @@ def image_thread(image_display: pygame.Surface, container):
             display_img(res[0]["img"], image_display)
         else:
             display_img(frame_glob, image_display)
+
+        # Publish prediction as ros message
+        if res:
+            for p in res:
+                t = Translation_(p["t"][0], p["t"][1], p["t"][2])
+                R = Rotation_(p["rot"][0], p["rot"][1], p["rot"][2], p["rot"][3])
+                pose_stamped = PoseStamped()
+                pose_stamped.header.frame_id = "world"
+                pose_stamped.pose.position.x = t.x
+                pose_stamped.pose.position.y = t.y
+                pose_stamped.pose.position.z = t.z
+
+                pose_stamped.pose.orientation.x = R.x
+                pose_stamped.pose.orientation.y = R.y
+                pose_stamped.pose.orientation.z = R.z
+
+                pose_pub.publish(pose_stamped)
 
         # TODO: Check if below works as expected
         # We want to skip the frames since the last processed frame in order to avoid delay
@@ -452,6 +471,10 @@ if __name__ == "__main__":
 
         pose_topic = "/mocap_node/tello/pose"
         pose_sub = rospy.Subscriber(pose_topic, PoseStamped, callback=pose_thread)
+        logger.succ("Pose thread started!")
+
+        global pose_pub
+        pose_pub = rospy.Publisher("/pose_out", PoseStamped)
 
         while True:
             time.sleep(0.01)  # loop with pygame.event.get() is too tight w/o some sleep
