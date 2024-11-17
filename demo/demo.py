@@ -15,6 +15,7 @@ from helper import Args, controls
 from PIL import Image
 from scipy.spatial.transform import Rotation
 from helper import dimensions
+import copy
 
 import av
 import cv2
@@ -68,10 +69,29 @@ def bottom_object_origin(object: str, t: np.ndarray):
     return t - center
 
 
+class Translation_:
+    def __init__(self, x, y, z):
+        self.x = x
+        self.y = y
+        self.z = z
+
+    def data(self):
+        return np.array([self.x, self.y, self.z])
+
+class Rotation_:
+    def __init__(self, x, y, z, w):
+        self.x = x
+        self.y = y
+        self.z = z
+        self.w = w
+
+    def data(self):
+        return np.array([self.x, self.y, self.z, self.w])
+
 class GroundTruth:
     def __init__(self, t: np.ndarray, R: np.ndarray):
-        self.t = t
-        self.R = R
+        self.t = Translation_(t[0], t[1], t[2])
+        self.R = Rotation_(R[0], R[1], R[2], R[3])
 
 
 class InferenceEngine:
@@ -91,7 +111,8 @@ class InferenceEngine:
 
         self.draw = draw
 
-    def rmse_rotation(self, rot_est, rot_gt):
+    @staticmethod
+    def rmse_rotation(rot_est: np.ndarray, rot_gt: np.ndarray):
         rot = np.matmul(rot_est, rot_gt.T)
         trace = np.trace(rot)
         if trace < -1.0:
@@ -141,21 +162,21 @@ class InferenceEngine:
 
         return [x1_pixel, y1_pixel, x2_pixel, y2_pixel]
 
-    def inference(self, frame: np.ndarray, gt: GroundTruth, verbose: bool = True):
+    def inference(self, frame_orig: np.ndarray, gt: GroundTruth, verbose: bool = True):
         r"""
         Args:
-          frame (np.ndarray): List of images to do inference on.
+          frame_orig (np.ndarray): List of images to do inference on.
           gt: (GroundTruth): Ground truth pose from tracking system.
           verbose (bool): Print runtime, results, RMSEs, etc.
         """
+        global IMG_WIDTH, IMG_HEIGHT
 
-        ## TODO: Check if w, h is correct
-        h, w, _ = frame.shape
-        if w != 640 or h != 480:
-            logger.err("Given image has not required size (640, 480)!")
+        h, w, _ = frame_orig.shape
+        if w != IMG_WIDTH or h != IMG_HEIGHT:
+            logger.err(f"Given image has not required size ({IMG_WIDTH}, {IMG_HEIGHT})!")
             return None
 
-        frame_orig = frame
+        frame = frame_orig.copy()
         # PoET expects input in (bs, c, h, w) format!
         frame = np.moveaxis(frame, 2, 0) #(c, h, w)
 
@@ -215,8 +236,8 @@ class InferenceEngine:
         t = mean_translation(result)
         R = mean_rotation(result)
 
-        t_rmse = self.rmse_translation(t, gt.t)
-        R_rmse = self.rmse_rotation(R, gt.R)
+        t_rmse = self.rmse_translation(t, gt.t.data())
+        R_rmse = self.rmse_rotation(R, gt.R.data())
 
         if verbose:
             logger.succ(
@@ -234,62 +255,67 @@ def display_img(frame: numpy.array, display: pygame.Surface):
     # image has to be prepared for pygame screen with: rotation, flipping, scaling
     rotated_image = pygame.transform.rotate(image, 270)
     flipped_image = pygame.transform.flip(rotated_image, True, False)
-    scaled_image = pygame.transform.scale(flipped_image, (IMG_ORIG_WIDTH, IMG_ORIG_HEIGHT))
+    scaled_image = pygame.transform.scale(flipped_image, (IMG_WIDTH, IMG_HEIGHT))
     # display image in pygame window
     display.blit(scaled_image, (0, 0))
 
 
-counter: int = 0
-frame_number: int = 0
 base_path: str = "demo/fly/"
-
-
-
+frame_number: int = 0
 frame_glob: np.array = None
 
-last_pose: GroundTruth = None
-def store_pose(pose: PoseStamped, frame_number: int):
-    global last_pose
 
-    name = "frame" + str(frame_number) + ".png"
+def store_pose(pose: GroundTruth, frame: int):
+    name = "frame" + str(frame) + ".png"
 
-    line = name + " " + str(pose.pose.position.x) + " " + str(pose.pose.position.y) + " " + str(
-        pose.pose.position.z) + " " + str(pose.pose.orientation.x) + " " + str(pose.pose.orientation.y) + " " + str(
-        pose.pose.orientation.z) + " " + str(pose.pose.orientation.w) + "\n"
-
-    t = np.array([pose.pose.position.x, pose.pose.position.y, pose.pose.position.z])
-    R = Rotation.from_quat([pose.pose.orientation.x, pose.pose.orientation.y, pose.pose.orientation.z, pose.pose.orientation.w]).as_matrix()
-    last_pose = GroundTruth(t, R)
+    line = name + " " + str(pose.t.x) + " " + str(pose.t.y) + " " + str(
+        pose.t.z) + " " + str(pose.R.x) + " " + str(pose.R.y) + " " + str(
+        pose.R.z) + " " + str(pose.R.w) + "\n"
 
     out_file = open(os.path.join(base_path, f"gt_cam.txt"), "a")
     out_file.write(line)
 
 
-def store_img(img: np.ndarray, number: int):
+def store_img(img: np.ndarray, frame: int):
     if img is None or img.size == 0: return
 
     path = f"{base_path}/imgs/"
-    name = "frame" + str(number) + ".png"
+    name = "frame" + str(frame) + ".png"
     cv2.imwrite(os.path.join(path, name), cv2.cvtColor(img, cv2.COLOR_RGB2BGR))
 
 
+last_pose: GroundTruth = None
+counter: int = 0
 def pose_thread(pose: PoseStamped):
+    """
+    Thread that receives the current pose of the drone from the optitrack system as PoseStamped object.
+    Stores the current drone pose into global "last_pose" variable.
+
+    """
     global counter
     global frame_number
-    counter += 1
+    global frame_glob
+    global last_pose
 
+    counter += 1
     if counter % 10 == 0 and frame_glob is not None:
-        store_img(frame_glob, frame_number)
         pose.header.frame_id = "world"
-        store_pose(pose, frame_number)
+        t = np.array([pose.pose.position.x, pose.pose.position.y, pose.pose.position.z])
+        R = Rotation.from_quat([pose.pose.orientation.x, pose.pose.orientation.y, pose.pose.orientation.z,
+                                pose.pose.orientation.w]).as_matrix()
+        last_pose = GroundTruth(t, R)
         
 
 
 def image_thread(image_display: pygame.Surface, container):
+    """
+    Thread that receives and decodes the current image of the drone.
+    """
     global frame_glob
     global frame_number
     global engine
     global last_pose
+    global IMG_WIDTH, IMG_HEIGHT
 
     # skip first 300 frames in order to avoid delay
     frame_skip = 300
@@ -298,32 +324,40 @@ def image_thread(image_display: pygame.Surface, container):
             frame_skip = frame_skip - 1
             continue
 
+        # TODO: Add sanity check to skip image if no **new** pose received by optitrack system
+        # Immediately get last recorded ground-truth pose of drone
+        if last_pose is not None:
+            gt = copy.deepcopy(last_pose)  # Ensure to get a deep-copy of the last pose, so that it won't be changed
+        else:
+            logger.warn("Got no pose, skipping inference on drone image ...")
+            continue  # If no pose recorded, skip
+
+
         start_time = time.time()
 
-        tmp = numpy.array(frame.to_image())
-        frame_glob = cv2.resize(tmp, (640, 480))
-        # store_img(frame_glob, frame_number)
+        tmp = numpy.array(frame.to_image())  # Convert frame to numpy array
+        frame_glob = cv2.resize(tmp, (IMG_WIDTH, IMG_HEIGHT))  # Resize image appropriately for inference
         frame_number += 1
 
-        gt = None
-        if last_pose == None:
-            gt = GroundTruth(np.array([0, 0, 0]), np.array([[0, 0, 0], [0, 0, 0], [0, 0, 0]]))
-        else:
-            gt = last_pose
+        # Store drone image and ground-truth data
+        store_img(frame_glob, frame_number)
+        store_pose(gt, frame_number)
 
+        # Do inference
         res = None
         try:
             res = engine.inference(frame_glob, gt)
         except Exception as error:
             logger.warn(error.with_traceback())
 
-        # display image
+        # Display annotated image
         if res and res[0] and "img" in res[0]:
             display_img(res[0]["img"], image_display)
         else:
             display_img(frame_glob, image_display)
 
-        # we want to skip the frames since the last processed frame in order to avoid delay
+        # TODO: Check if below works as expected
+        # We want to skip the frames since the last processed frame in order to avoid delay
         if frame.time_base < 1.0 / 60:
             time_base = 1.0 / 60
         else:
@@ -331,8 +365,8 @@ def image_thread(image_display: pygame.Surface, container):
         frame_skip = int((time.time() - start_time) / time_base)
 
 
-IMG_ORIG_WIDTH = 640
-IMG_ORIG_HEIGHT = 480
+IMG_WIDTH = 640
+IMG_HEIGHT = 480
 
 engine: InferenceEngine = None
 
@@ -385,7 +419,7 @@ if __name__ == "__main__":
 
     rospy.init_node('poet_demo_node')
 
-    image_display = pygame.display.set_mode((IMG_ORIG_WIDTH, IMG_ORIG_HEIGHT))
+    image_display = pygame.display.set_mode((IMG_WIDTH, IMG_HEIGHT))
     pygame.display.set_caption('Camera stream (live)')
 
     # display icg icon instead of pygame icon
