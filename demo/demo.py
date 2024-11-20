@@ -79,19 +79,23 @@ class Translation_:
         return np.array([self.x, self.y, self.z])
 
 class Rotation_:
-    def __init__(self, x, y, z, w):
-        self.x = x
-        self.y = y
-        self.z = z
-        self.w = w
+    def __init__(self, R: np.ndarray):
+        if R.size == 4: # Quaternion
+            self.x, self.y, self.z, self.w = R[0], R[1], R[2], R[3]
+            self.R = Rotation.from_quat([R[0], R[1], R[2], R[3]]).as_matrix()
+        else:
+            # TODO: Check if this is correct!!!
+            quat = Rotation.from_matrix(R).as_quat()
+            self.x, self.y, self.z, self.w = quat[0], quat[1], quat[2], quat[3]
+            self.R = R
 
     def data(self):
-        return np.array([self.x, self.y, self.z, self.w])
+        return self.R
 
 class Pose:
     def __init__(self, t: np.ndarray, R: np.ndarray, seq: int):
         self.t = Translation_(t[0], t[1], t[2])
-        self.R = Rotation_(R[0], R[1], R[2], R[3])
+        self.R = Rotation_(R)
 
 
 class InferenceEngine:
@@ -106,7 +110,6 @@ class InferenceEngine:
         self.checkpoint = torch.load(args.resume, map_location='cpu')
         self.model.load_state_dict(self.checkpoint['model'], strict=False)
 
-        self.img_id = 0
         self.results = {}
 
         self.draw = draw
@@ -162,7 +165,7 @@ class InferenceEngine:
 
         return [x1_pixel, y1_pixel, x2_pixel, y2_pixel]
 
-    def inference(self, frame_orig: np.ndarray, gt: Pose, verbose: bool = True):
+    def inference(self, frame_orig: np.ndarray, gt: Pose, frame_number: int, verbose: bool = True):
         r"""
         Args:
           frame_orig (np.ndarray): List of images to do inference on.
@@ -240,11 +243,12 @@ class InferenceEngine:
         R_rmse = self.rmse_rotation(R, gt.R.data())
 
         if verbose:
-            logger.succ(
-                f"[{self.img_id:04d}] Total: {time.time() - start_:.4f}s | PoEt: {poet_time:.4f}s | x: {t[0]:.4f} | y: {t[1]:.4f} | z : {t[2]:.4f} | RMSE (t): {t_rmse:.4f}, (R): {R_rmse:.4f}")
+            txt = f"[{frame_number:04d}] Total: {time.time() - start_:.4f}s | PoEt: {poet_time:.4f}s | x: {t[0]:.4f} | y: {t[1]:.4f} | z : {t[2]:.4f} | RMSE (t): {t_rmse:.4f}, (R): {R_rmse:.4f}"
+            logger.succ(txt)
+            log_file.write(txt + "\n")
 
-        self.results[self.img_id] = result
-        self.img_id += 1
+
+        self.results[frame_number] = result
         return result
 
 
@@ -264,22 +268,21 @@ base_path: str = "demo/fly/"
 frame_number: int = 0
 frame_glob: np.array = None
 
-
 def store_pose(pose: Pose, frame: int):
     name = "frame" + str(frame) + ".png"
 
     line = name + " " + str(pose.t.x) + " " + str(pose.t.y) + " " + str(
         pose.t.z) + " " + str(pose.R.x) + " " + str(pose.R.y) + " " + str(
         pose.R.z) + " " + str(pose.R.w) + "\n"
-
-    out_file = open(os.path.join(base_path, f"gt_cam.txt"), "a")
-    out_file.write(line)
+    
+    gt_file.write(line)
 
 
 def store_img(img: np.ndarray, frame: int):
     if img is None or img.size == 0: return
 
-    path = f"{base_path}/imgs/"
+    # path = f"{base_path}/imgs/"
+    path = imgs_folder
     name = "frame" + str(frame) + ".png"
     cv2.imwrite(os.path.join(path, name), cv2.cvtColor(img, cv2.COLOR_RGB2BGR))
 
@@ -298,7 +301,8 @@ def pose_thread(pose: PoseStamped):
     global last_pose
 
     counter += 1
-    if counter % 10 == 0 and frame_glob is not None:
+    #if counter % 10 == 0 and frame_glob is not None:
+    if frame_glob is not None:
         pose.header.frame_id = "world"
         t = np.array([pose.pose.position.x, pose.pose.position.y, pose.pose.position.z])
         R = Rotation.from_quat([pose.pose.orientation.x, pose.pose.orientation.y, pose.pose.orientation.z,
@@ -326,6 +330,12 @@ def image_thread(image_display: pygame.Surface, container):
             frame_skip = frame_skip - 1
             continue
 
+        start_time = time.time()
+
+        tmp = numpy.array(frame.to_image())  # Convert frame to numpy array
+        frame_glob = cv2.resize(tmp, (IMG_WIDTH, IMG_HEIGHT))  # Resize image appropriately for inference
+        frame_number += 1
+
         # TODO: Add sanity check to skip image if no **new** pose received by optitrack system
         # Immediately get last recorded ground-truth pose of drone
         if last_pose is not None:
@@ -334,13 +344,6 @@ def image_thread(image_display: pygame.Surface, container):
             logger.warn("Got no pose, skipping inference on drone image ...")
             continue  # If no pose recorded, skip
 
-
-        start_time = time.time()
-
-        tmp = numpy.array(frame.to_image())  # Convert frame to numpy array
-        frame_glob = cv2.resize(tmp, (IMG_WIDTH, IMG_HEIGHT))  # Resize image appropriately for inference
-        frame_number += 1
-
         # Store drone image and ground-truth data
         store_img(frame_glob, frame_number)
         store_pose(gt, frame_number)
@@ -348,13 +351,16 @@ def image_thread(image_display: pygame.Surface, container):
         # Do inference
         res = None
         try:
-            res = engine.inference(frame_glob, gt)
+            res = engine.inference(frame_glob, gt, frame_number)
         except Exception as error:
             logger.warn(error.with_traceback())
 
         # Display annotated image
         if res and res[0] and "img" in res[0]:
             display_img(res[0]["img"], image_display)
+            path = imgs_folder
+            name = f"frame{frame_number}_1.png"
+            cv2.imwrite(os.path.join(path, name), cv2.cvtColor(res[0]["img"], cv2.COLOR_RGB2BGR))
         else:
             display_img(frame_glob, image_display)
 
@@ -362,7 +368,7 @@ def image_thread(image_display: pygame.Surface, container):
         if res:
             for p in res:
                 t = Translation_(p["t"][0], p["t"][1], p["t"][2])
-                R = Rotation_(p["rot"][0], p["rot"][1], p["rot"][2], p["rot"][3])
+                R = Rotation_(p["rot"])
                 pose_stamped = PoseStamped()
                 pose_stamped.header.frame_id = "world"
                 pose_stamped.pose.position.x = t.x
@@ -388,7 +394,9 @@ IMG_WIDTH = 640
 IMG_HEIGHT = 480
 
 engine: InferenceEngine = None
-
+log_file = None
+gt_file = None
+imgs_folder = None
 if __name__ == "__main__":
     args = Args()
 
@@ -424,8 +432,8 @@ if __name__ == "__main__":
     # args.lr = 0.000035
     # args.lr_drop = 50
     # args.gamma = 0.1
-    # args.resume = "/home/wngicg/Desktop/repos/poet/results/train/2024-10-06_12_31_12/checkpoint.pth"
-    args.resume = "/media/wngicg/USB-DATA/repos/poet/results_doll/train/2024-10-13_14_09_21/checkpoint.pth"
+    args.resume = "/home/wngicg/Desktop/repos/poet/results/train/2024-10-06_12_31_12/checkpoint.pth"
+    #args.resume = "/media/wngicg/USB-DATA/repos/poet/results_doll/train/2024-10-13_14_09_21/checkpoint.pth"
     args.device = "cuda"
 
     # ---------------------------------------------------------------------------------------------
@@ -465,6 +473,25 @@ if __name__ == "__main__":
                 print(ave)
                 print('Retrying getting tello video stream ...')
 
+        i = 0
+        while os.path.exists(f"{base_path}/pred_%s.txt" % i):
+            i += 1
+
+        log_file = open(f"{base_path}/pred_%s.txt" % i, "w")
+
+        i = 0
+        while os.path.exists(f"{base_path}/gt_cam_%s.txt" % i):
+            i += 1
+
+        gt_file = open(f"{base_path}/gt_cam_%s.txt" % i, "w")
+
+        i = 0
+        while os.path.exists(f"{base_path}/imgs_%s/" % i):
+            i += 1
+
+        imgs_folder = f"{base_path}/imgs_%s/" % i
+        os.mkdir(imgs_folder)
+
         key_thread = threading.Thread(target=image_thread, args=(image_display, container))
         key_thread.start()
         logger.succ("Image thread started!")
@@ -473,7 +500,6 @@ if __name__ == "__main__":
         pose_sub = rospy.Subscriber(pose_topic, PoseStamped, callback=pose_thread)
         logger.succ("Pose thread started!")
 
-        global pose_pub
         pose_pub = rospy.Publisher("/pose_out", PoseStamped)
 
         while True:
