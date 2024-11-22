@@ -26,6 +26,7 @@ from .groundingdino.util.misc import clean_state_dict
 import models.groundingdino.datasets.transforms as T
 
 from util.misc import NestedTensor
+from util import logger
 
 import supervision as sv
 import cv2
@@ -125,10 +126,11 @@ class YOLOBackbone(Darknet):
 
 
 class YOLODINOBackbone(nn.Module):
-  def __init__(self, yolo_backbone=None, dino_backbone=None, class_info=None, class_mode="specific", dataset="ycbv", device="cuda") -> None:
+  def __init__(self, yolo_backbone=None, dino_backbone=None, args=None) -> None:
     super(YOLODINOBackbone, self).__init__()
 
-    self.device = device
+    self.args = args
+    self.device = args.device if args.device else "cuda"
 
     assert yolo_backbone is not None
     self.yolo_backbone = yolo_backbone
@@ -136,7 +138,7 @@ class YOLODINOBackbone(nn.Module):
     assert dino_backbone is not None
     self.dino_backbone = dino_backbone
 
-    self.class_mode = class_mode
+    self.class_mode = args.class_mode if args.class_mode else "specific"
 
     self.strides = self.yolo_backbone.strides
     self.num_channels = self.yolo_backbone.num_channels
@@ -146,10 +148,16 @@ class YOLODINOBackbone(nn.Module):
       for name, parameter in self.named_parameters():
         parameter.requires_grad_(False)
 
+    if args.class_info[0] == "/":
+        args.class_info = args.class_info[1:]
+
+    class_info = os.path.join(args.dataset_path, args.class_info)
     assert class_info is not None
 
     with open(class_info, 'r') as f:
       self.class_info = json.load(f)
+
+    dataset = args.dataset if args.dataset else "ycbv"
 
     self.map = {}
     if dataset == "ycbv":
@@ -168,11 +176,17 @@ class YOLODINOBackbone(nn.Module):
     self.tfidf = self.vectorizer.fit_transform(self.map.keys())
 
     ## TODO: Refactore single label classification caption for dino
-    if class_mode == "agnostic":
-      self.dino_caption = "object in the middle."
+    if self.class_mode == "agnostic":
+        if not args.dino_caption:
+            logger.warn(f"Class mode is '{self.class_mode}', using default dino caption 'object in the middle.'!")
+            self.dino_caption = "object in the middle."
+        else:
+            self.dino_caption = args.dino_caption
     else:
-      self.dino_caption = ". ".join(list(self.map.keys()))
-      self.dino_caption = self.dino_caption.replace("_", " ")
+        if args.dino_caption:
+            logger.warn(f"Class mode is '{self.class_mode}', ignoring provided dino caption '{args.dino_caption}'!")
+        self.dino_caption = ". ".join(list(self.map.keys()))
+        self.dino_caption = self.dino_caption.replace("_", " ")
 
   def dinoPredict(self, images: torch.Tensor, caption_: str, box_threshold: float, text_threshold: float,
                   remove_combined: bool = False) -> Tuple[torch.Tensor, torch.Tensor, List[str]]:
@@ -245,7 +259,7 @@ class YOLODINOBackbone(nn.Module):
 
     predictions = []
     for idx, (boxes, logits, phrases) in enumerate(
-        self.dinoPredict(images=images, caption_=self.dino_caption, box_threshold=0.35, text_threshold=0.25)):
+        self.dinoPredict(images=images, caption_=self.dino_caption, box_threshold=self.args.dino_box_threshold, text_threshold=self.args.dino_txt_threshold)):
       image = raw_images[idx]
 
       # Unnormalize bboxes (Predicted bboxes are in normalized "cxcywh" format!!)
@@ -257,18 +271,19 @@ class YOLODINOBackbone(nn.Module):
       ################################
       # BBox Visualization
       #
-      # labels = [
-      #   f"{phrase} {logit:.2f}"
-      #   for phrase, logit
-      #   in zip(phrases, logits)
-      # ]
-      # detections = sv.Detections(xyxy=boxes.numpy())
-      # box_annotator = sv.BoxAnnotator()
-      # annotated_frame = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
-      # annotated_frame = box_annotator.annotate(scene=annotated_frame, detections=detections, labels=labels)
-      # cv2.imshow('frame', annotated_frame)
-      # cv2.waitKey(-1)
-      # cv2.destroyAllWindows()
+      if self.args.dino_bbox_viz:
+          labels = [
+            f"{phrase} {logit:.2f}"
+            for phrase, logit
+            in zip(phrases, logits)
+          ]
+          detections = sv.Detections(xyxy=boxes.numpy())
+          box_annotator = sv.BoxAnnotator()
+          annotated_frame = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
+          annotated_frame = box_annotator.annotate(scene=annotated_frame, detections=detections, labels=labels)
+          cv2.imshow('frame', annotated_frame)
+          cv2.waitKey(-1)
+          cv2.destroyAllWindows()
 
       if not len(boxes) == 0:
         p = []
@@ -278,8 +293,7 @@ class YOLODINOBackbone(nn.Module):
             label_vec = self.vectorizer.transform([label])
             cos_sim = cosine_similarity(label_vec, self.tfidf).flatten()
 
-            ## TODO: Refactore threshold
-            if all(v <= 0.1 for v in cos_sim):  # If not a single label matches 10% of pred label
+            if all(v <= self.args.dino_cos_sim for v in cos_sim):  # If not a single label matches 10% of pred label
               continue
 
             best_match_idx = np.argmax(cos_sim)
@@ -303,12 +317,11 @@ class YOLODINOBackbone(nn.Module):
     return predictions, out
 
 def build_yolo_dino(args):
-    ## TODO: Refactor Paths! Provide them via args!
-    args_dino = SLConfig.fromfile(os.path.join(ROOT_DIR, "models/groundingdino/config/GroundingDINO_SwinT_OGC.py"))
+    args_dino = SLConfig.fromfile(os.path.join(ROOT_DIR, args.dino_args))
     args_dino.device = "cuda"
     dino = build_groundingdino(args_dino)
 
-    checkpoint = torch.load(os.path.join(ROOT_DIR, "models/groundingdino/weights/groundingdino_swint_ogc.pth"), map_location="cpu")
+    checkpoint = torch.load(os.path.join(ROOT_DIR, args.dino_checkpoint), map_location="cpu")
     dino.load_state_dict(clean_state_dict(checkpoint["model"]), strict=False)
     dino.eval()
 
@@ -322,7 +335,5 @@ def build_yolo_dino(args):
             print(e)
             load_darknet_weights(cns_yolo, args.backbone_weights)
 
-
-    yolo_dino = YOLODINOBackbone(yolo_backbone=cns_yolo, dino_backbone=dino, class_info=args.dataset_path + args.class_info,
-                                 class_mode=args.class_mode, dataset=args.dataset, device=args.device)
+    yolo_dino = YOLODINOBackbone(yolo_backbone=cns_yolo, dino_backbone=dino, args=args)
     return yolo_dino

@@ -76,6 +76,15 @@ def get_args_parser():
                         help="position / size * scale")
     parser.add_argument('--num_feature_levels', default=4, type=int, help='number of feature levels')
 
+    # * DINO BACKBONE
+    parser.add_argument('--dino_caption', default=None, type=str, help='Caption for Grounding DINO object detection')
+    parser.add_argument('--dino_args', default="models/groundingdino/config/GroundingDINO_SwinT_OGC.py", type=str, help='Args for Grounding DINO backbone')
+    parser.add_argument('--dino_checkpoint', default="models/groundingdino/weights/groundingdino_swint_ogc.pth", type=str, help='Checkpoint for Grounding DINO backbone')
+    parser.add_argument('--dino_box_threshold', default=0.35, type=float, help='Bounding Box threshold for Grounding DINO')
+    parser.add_argument('--dino_txt_threshold', default=0.25, type=float, help='Text threshold for Grounding DINO')
+    parser.add_argument('--dino_cos_sim', default=0.9, type=float, help='Cosine similarity for matching Grounding DINO predictions to labels')
+    parser.add_argument('--dino_bbox_viz', default=False, type=bool, help='Visualize Grounding DINO bounding box predictions and labels')
+
     # ** PoET configs
     parser.add_argument('--bbox_mode', default='gt', type=str, choices=('gt', 'backbone', 'jitter'),
                         help='Defines which bounding boxes should be used for PoET to determine query embeddings.')
