@@ -49,7 +49,8 @@ Copyright (C) 2021 Free Software Foundation, Inc.
 This is free software; see the source for copying conditions.  There is NO
 warranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
 
-
+#####################################
+>>> nvidia-smi
 +-----------------------------------------------------------------------------------------+
 | NVIDIA-SMI 550.120                Driver Version: 550.120        CUDA Version: 12.4     |
 |-----------------------------------------+------------------------+----------------------+
@@ -74,6 +75,7 @@ warranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
 |    0   N/A  N/A     33006      G   ...erProcess --variations-seed-version        106MiB |
 +-----------------------------------------------------------------------------------------+
 
+#########################################
 torch.backends.cudnn.deterministic = True
 torch.backends.cudnn.benchmark = False
 
@@ -214,8 +216,3 @@ Build cuda_11.8.r11.8/compiler.31833905_0
       "version" : "2.13.5"
    }
 }
-
-gcc (Ubuntu 11.4.0-1ubuntu1~22.04) 11.4.0
-Copyright (C) 2021 Free Software Foundation, Inc.
-This is free software; see the source for copying conditions.  There is NO
-warranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
