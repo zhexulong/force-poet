@@ -17,6 +17,8 @@ from scipy.spatial.transform import Rotation
 from helper import dimensions
 import copy
 
+import torchvision.transforms.functional as F
+
 import av
 import cv2
 import numpy
@@ -174,17 +176,22 @@ class InferenceEngine:
         """
         global IMG_WIDTH, IMG_HEIGHT
 
-        h, w, _ = frame_orig.shape
+        #h, w, _ = frame_orig.shape # nd.array
+        w, h = frame_orig.size
+
         if w != IMG_WIDTH or h != IMG_HEIGHT:
-            logger.err(f"Given image has not required size ({IMG_WIDTH}, {IMG_HEIGHT})!")
+            logger.err(f"Given image has not required size ({IMG_WIDTH} x {IMG_HEIGHT})!")
             return None
 
-        frame = frame_orig.copy()
+        frame = np.array(frame_orig) # Image -> nd.array
+        frame = F.to_tensor(frame).to("cuda") # nd.array -> tensor.cuda.floatTensor
+        frame = frame.unsqueeze(0) # 
+        
         # PoET expects input in (bs, c, h, w) format!
-        frame = np.moveaxis(frame, 2, 0) #(c, h, w)
+        #frame = np.moveaxis(frame, 2, 0) #(c, h, w)
 
-        frame = np.expand_dims(frame, axis=0)  # Add dimension in the front for list of tensors -> (1, c, h, w)
-        frame = torch.from_numpy(frame).to(self.device).float()
+        #frame = np.expand_dims(frame, axis=0)  # Add dimension in the front for list of tensors -> (1, c, h, w)
+        #frame = torch.from_numpy(frame).to(self.device).float()
 
         # outputs['pred_translation'] -> (bd, n_queries, 3);
         # outputs['pred_rotation']    -> (bs, n_queries, 3, 3)
@@ -230,7 +237,8 @@ class InferenceEngine:
                 detections = sv.Detections(
                     xyxy=np.array([self.transform_bbox(pred_box, (w, h))]), class_id=np.array([0]))  # transform normalized cxcywh to xyxy
                 box_annotator = sv.BoundingBoxAnnotator()
-                img = Image.fromarray(frame_orig)
+                #img = Image.fromarray(frame_orig)
+                img = frame_orig
                 annotated_frame = box_annotator.annotate(scene=img, detections=detections)
                 result[d]["img"] = np.array(annotated_frame)
 
@@ -243,7 +251,7 @@ class InferenceEngine:
         R_rmse = self.rmse_rotation(R, gt.R.data())
 
         if verbose:
-            txt = f"[{frame_number:04d}] Total: {time.time() - start_:.4f}s | PoEt: {poet_time:.4f}s | x: {t[0]:.4f} | y: {t[1]:.4f} | z : {t[2]:.4f} | RMSE (t): {t_rmse:.4f}, (R): {R_rmse:.4f}"
+            txt = f"[{frame_number:04d}] Total: {time.time() - start_:.4f}s | PoEt: {poet_time:>.4f}s | x: {t[0]:.4f} | y: {t[1]:.4f} | z : {t[2]:.4f} | RMSE (t): {t_rmse:.4f}, (R): {R_rmse:.4f}"
             logger.succ(txt)
             log_file.write(txt + "\n")
 
@@ -282,8 +290,9 @@ def store_img(img: np.ndarray, frame: int):
     if img is None or img.size == 0: return
 
     # path = f"{base_path}/imgs/"
-    path = imgs_folder
+    path = rgb_folder
     name = "frame" + str(frame) + ".png"
+    # img.save(os.path.join(name))
     cv2.imwrite(os.path.join(path, name), cv2.cvtColor(img, cv2.COLOR_RGB2BGR))
 
 
@@ -332,8 +341,9 @@ def image_thread(image_display: pygame.Surface, container):
 
         start_time = time.time()
 
-        tmp = numpy.array(frame.to_image())  # Convert frame to numpy array
+        tmp = np.array(frame.to_image())  # Convert frame to numpy array
         frame_glob = cv2.resize(tmp, (IMG_WIDTH, IMG_HEIGHT))  # Resize image appropriately for inference
+        frame_glob = Image.fromarray(frame_glob).convert("RGB")
         frame_number += 1
 
         # TODO: Add sanity check to skip image if no **new** pose received by optitrack system
@@ -345,7 +355,7 @@ def image_thread(image_display: pygame.Surface, container):
             continue  # If no pose recorded, skip
 
         # Store drone image and ground-truth data
-        store_img(frame_glob, frame_number)
+        store_img(np.array(frame_glob), frame_number)
         store_pose(gt, frame_number)
 
         # Do inference
@@ -358,11 +368,11 @@ def image_thread(image_display: pygame.Surface, container):
         # Display annotated image
         if res and res[0] and "img" in res[0]:
             display_img(res[0]["img"], image_display)
-            path = imgs_folder
-            name = f"frame{frame_number}_1.png"
-            cv2.imwrite(os.path.join(path, name), cv2.cvtColor(res[0]["img"], cv2.COLOR_RGB2BGR))
+            # path = bbox_folder
+            # name = f"frame{frame_number}_1.png"
+            # cv2.imwrite(os.path.join(path, name), cv2.cvtColor(res[0]["img"], cv2.COLOR_RGB2BGR))
         else:
-            display_img(frame_glob, image_display)
+            display_img(np.array(frame_glob), image_display)
 
         # Publish prediction as ros message
         if res:
@@ -378,6 +388,7 @@ def image_thread(image_display: pygame.Surface, container):
                 pose_stamped.pose.orientation.x = R.x
                 pose_stamped.pose.orientation.y = R.y
                 pose_stamped.pose.orientation.z = R.z
+                pose_stamped.pose.orientation.w = R.w
 
                 pose_pub.publish(pose_stamped)
 
@@ -389,6 +400,8 @@ def image_thread(image_display: pygame.Surface, container):
             time_base = frame.time_base
         frame_skip = int((time.time() - start_time) / time_base)
 
+        # print(f"total: {time.time() - start_time}s")
+
 
 IMG_WIDTH = 640
 IMG_HEIGHT = 480
@@ -396,7 +409,8 @@ IMG_HEIGHT = 480
 engine: InferenceEngine = None
 log_file = None
 gt_file = None
-imgs_folder = None
+rgb_folder = None
+bbox_folder = None
 if __name__ == "__main__":
     args = Args()
 
@@ -435,6 +449,23 @@ if __name__ == "__main__":
     args.resume = "/home/wngicg/Desktop/repos/poet/results/train/2024-10-06_12_31_12/checkpoint.pth"
     #args.resume = "/media/wngicg/USB-DATA/repos/poet/results_doll/train/2024-10-13_14_09_21/checkpoint.pth"
     args.device = "cuda"
+
+    args.dino_caption = "human with blue tshirt."
+    args.dino_args = "models/groundingdino/config/GroundingDINO_SwinT_OGC.py"
+    args.dino_checkpoint = "models/groundingdino/weights/groundingdino_swint_ogc.pth"
+    args.dino_box_threshold = 0.35
+    args.dino_txt_threshold = 0.25
+    args.dino_cos_cim = 0.9
+    args.dino_bbox_viz = False
+
+
+    #     parser.add_argument('--dino_caption', default=None, type=str, help='Caption for Grounding DINO object detection')
+    # parser.add_argument('--dino_args', default="models/groundingdino/config/GroundingDINO_SwinT_OGC.py", type=str, help='Args for Grounding DINO backbone')
+    # parser.add_argument('--dino_checkpoint', default="models/groundingdino/weights/groundingdino_swint_ogc.pth", type=str, help='Checkpoint for Grounding DINO backbone')
+    # parser.add_argument('--dino_box_threshold', default=0.35, type=float, help='Bounding Box threshold for Grounding DINO')
+    # parser.add_argument('--dino_txt_threshold', default=0.25, type=float, help='Text threshold for Grounding DINO')
+    # parser.add_argument('--dino_cos_sim', default=0.9, type=float, help='Cosine similarity for matching Grounding DINO predictions to labels')
+    # parser.add_argument('--dino_bbox_viz', default=False, type=bool, help='Visualize Grounding DINO bounding box predictions and labels')
 
     # ---------------------------------------------------------------------------------------------
 
@@ -489,8 +520,11 @@ if __name__ == "__main__":
         while os.path.exists(f"{base_path}/imgs_%s/" % i):
             i += 1
 
-        imgs_folder = f"{base_path}/imgs_%s/" % i
-        os.mkdir(imgs_folder)
+        rgb_folder = f"{base_path}/imgs_%s/rgb" % i
+        os.makedirs(rgb_folder)
+
+        bbox_folder = f"{base_path}/imgs_%s/bbox" % i
+        os.makedirs(bbox_folder)
 
         key_thread = threading.Thread(target=image_thread, args=(image_display, container))
         key_thread.start()
@@ -511,7 +545,7 @@ if __name__ == "__main__":
             for e in pygame.event.get():
                 # check if any key was pressed
                 if e.type == pygame.locals.KEYDOWN:
-                    print('+' + pygame.key.name(e.key))
+                    # print('+' + pygame.key.name(e.key))
                     keyname = pygame.key.name(e.key)
                     # check if pressed key was escape (shutdown program)
                     if keyname == 'escape':
@@ -527,7 +561,7 @@ if __name__ == "__main__":
 
                 # check if pressed key was released (set speed to zero)
                 elif e.type == pygame.locals.KEYUP:
-                    print('-' + pygame.key.name(e.key))
+                    # print('-' + pygame.key.name(e.key))
                     keyname = pygame.key.name(e.key)
                     if keyname in controls:
                         key_handler = controls[keyname]
