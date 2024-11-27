@@ -403,14 +403,33 @@ def image_thread(image_display: pygame.Surface, container):
         # print(f"total: {time.time() - start_time}s")
 
 
-IMG_WIDTH = 640
-IMG_HEIGHT = 480
-
-engine: InferenceEngine = None
 log_file = None
 gt_file = None
 rgb_folder = None
 bbox_folder = None
+
+
+def createFolderStructure():
+    global log_file, gt_file, rgb_folder, bbox_folder
+
+    i = 0
+    while os.path.exists(f"{base_path}/imgs_%s" % i):
+        i += 1
+
+    rgb_folder = f"{base_path}/imgs_%s/rgb" % i
+    os.makedirs(rgb_folder)
+
+    bbox_folder = f"{base_path}/imgs_%s/bbox" % i
+    os.makedirs(bbox_folder)
+
+    log_file = open(f"{base_path}/imgs_%s/pred.txt" % i, "w")
+    gt_file = open(f"{base_path}/imgs_%s/gt_cam.txt" % i, "w")
+
+
+IMG_WIDTH = 640
+IMG_HEIGHT = 480
+
+engine: InferenceEngine = None
 if __name__ == "__main__":
     args = Args()
 
@@ -504,27 +523,7 @@ if __name__ == "__main__":
                 print(ave)
                 print('Retrying getting tello video stream ...')
 
-        i = 0
-        while os.path.exists(f"{base_path}/pred_%s.txt" % i):
-            i += 1
-
-        log_file = open(f"{base_path}/pred_%s.txt" % i, "w")
-
-        i = 0
-        while os.path.exists(f"{base_path}/gt_cam_%s.txt" % i):
-            i += 1
-
-        gt_file = open(f"{base_path}/gt_cam_%s.txt" % i, "w")
-
-        i = 0
-        while os.path.exists(f"{base_path}/imgs_%s/" % i):
-            i += 1
-
-        rgb_folder = f"{base_path}/imgs_%s/rgb" % i
-        os.makedirs(rgb_folder)
-
-        bbox_folder = f"{base_path}/imgs_%s/bbox" % i
-        os.makedirs(bbox_folder)
+        createFolderStructure()
 
         key_thread = threading.Thread(target=image_thread, args=(image_display, container))
         key_thread.start()
