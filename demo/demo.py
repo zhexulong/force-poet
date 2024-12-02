@@ -1,3 +1,4 @@
+import json
 import sys
 import os
 
@@ -101,7 +102,7 @@ class Pose:
 
 
 class InferenceEngine:
-    def __init__(self, args, draw: bool = False):
+    def __init__(self, args: Args, draw: bool = False):
         self.args = args
         self.device = torch.device(args.device)
         self.model, self.criterion, self.matcher = build_model(args)
@@ -112,7 +113,7 @@ class InferenceEngine:
         self.checkpoint = torch.load(args.resume, map_location='cpu')
         self.model.load_state_dict(self.checkpoint['model'], strict=False)
 
-        self.results = {}
+        self.results: dict = {}
 
         self.draw = draw
 
@@ -167,7 +168,7 @@ class InferenceEngine:
 
         return [x1_pixel, y1_pixel, x2_pixel, y2_pixel]
 
-    def inference(self, frame_orig: np.ndarray, gt: Pose, frame_number: int, verbose: bool = True):
+    def inference(self, frame_orig: Image, gt: Pose, frame_number: int, verbose: bool = True):
         r"""
         Args:
           frame_orig (np.ndarray): List of images to do inference on.
@@ -177,7 +178,7 @@ class InferenceEngine:
         global IMG_WIDTH, IMG_HEIGHT
 
         #h, w, _ = frame_orig.shape # nd.array
-        w, h = frame_orig.size
+        w, h = frame_orig.size # Image
 
         if w != IMG_WIDTH or h != IMG_HEIGHT:
             logger.err(f"Given image has not required size ({IMG_WIDTH} x {IMG_HEIGHT})!")
@@ -200,7 +201,11 @@ class InferenceEngine:
         outputs, n_boxes_per_sample = self.model(frame, None)
         poet_time = time.time() - start_
 
+        frame_str = str(f"frame{frame_number}")
+        self.results[frame_str] = {}
+
         if outputs is None:
+            logger.warn("No prediction ... 'outputs' is None!")
             return None
 
         val = False
@@ -215,7 +220,7 @@ class InferenceEngine:
             return None
 
         # Iterate over all the detected predictions
-        result = []
+        result: dict = {}
         for d in range(n_boxes_per_sample[0]):
             pred_t = np.array(outputs['pred_translation'][0][d].detach().cpu().tolist())
             pred_rot = np.array(outputs['pred_rotation'][0][d].detach().cpu().tolist())
@@ -225,13 +230,7 @@ class InferenceEngine:
             # TODO: Refactor object
             R, t = self.transform_to_cam(pred_rot, pred_t, "doll")
 
-            result.append({
-                "t": t,
-                "rot": R,
-                "box": pred_box,  # format: cxcywh
-                "class": pred_class
-            })
-
+            img = None
             if self.draw:
                 # Draw predicted bounding box
                 detections = sv.Detections(
@@ -240,8 +239,17 @@ class InferenceEngine:
                 #img = Image.fromarray(frame_orig)
                 img = frame_orig
                 annotated_frame = box_annotator.annotate(scene=img, detections=detections)
-                result[d]["img"] = np.array(annotated_frame)
+                img = np.array(annotated_frame)
 
+            result[d] = {
+                "t": t,
+                "rot": R,
+                "box": pred_box,  # format: cxcywh
+                "class": pred_class,
+                "img": img,
+            }
+
+        self.results[frame_str] = result
         if not result: return None
 
         t = mean_translation(result)
@@ -255,8 +263,6 @@ class InferenceEngine:
             logger.succ(txt)
             log_file.write(txt + "\n")
 
-
-        self.results[frame_number] = result
         return result
 
 
@@ -404,13 +410,14 @@ def image_thread(image_display: pygame.Surface, container):
 
 
 log_file = None
+pred_file = None
 gt_file = None
 rgb_folder = None
 bbox_folder = None
 
 
 def createFolderStructure():
-    global log_file, gt_file, rgb_folder, bbox_folder
+    global log_file, pred_file, gt_file, rgb_folder, bbox_folder
 
     i = 0
     while os.path.exists(f"{base_path}/imgs_%s" % i):
@@ -422,8 +429,9 @@ def createFolderStructure():
     bbox_folder = f"{base_path}/imgs_%s/bbox" % i
     os.makedirs(bbox_folder)
 
-    log_file = open(f"{base_path}/imgs_%s/pred.txt" % i, "w")
+    pred_file = open(f"{base_path}/imgs_%s/pred.txt" % i, "w")
     gt_file = open(f"{base_path}/imgs_%s/gt_cam.txt" % i, "w")
+    log_file = open(f"{base_path}/imgs_%s/log.txt" % i, "w")
 
 
 IMG_WIDTH = 640
@@ -572,6 +580,12 @@ if __name__ == "__main__":
     except e:
         logger.err(str(e))
     finally:
+        logger.warn("Exiting PoET demo script!")
+
+        logger.info(f"Predicted {len(engine.results)} poses")
+        logger.info("Saving predicted poses as json ...")
+        json.dumps(engine.results, indent=4)
+
         logger.warn('Shutting down connection to drone...')
         drone.quit()
         exit(1)
