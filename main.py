@@ -488,6 +488,7 @@ def main(args):
 
                 writer.add_scalar("Val/avg_trans_err", avg_trans_err, epoch)
                 writer.add_scalar("Val/avg_rot_err", avg_rot_err, epoch)
+                writer.add_scalar("Val/avg_err", (avg_trans_err + avg_rot_err) / 2, epoch)
 
                 log_stats = {**{f'train_{k}': v for k, v in train_stats.items()},
                              'epoch': epoch,
