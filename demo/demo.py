@@ -37,13 +37,13 @@ warnings.filterwarnings("ignore", category=DeprecationWarning)
 
 
 def mean_translation(data):
-    translations = np.array([entry['t'] for entry in data])  # Extract all translations
+    translations = np.array([data[key]['t'] for key in data])  # Extract all translations
     mean_t = np.mean(translations, axis=0)  # Compute mean
     return mean_t
 
 
 def mean_rotation(data):
-    rotations = np.array([entry['rot'] for entry in data])  # Extract rotations
+    rotations = np.array([data[key]['rot'] for key in data])  # Extract rotations
     mean_rot = np.mean(rotations, axis=0)  # Average element-wise
 
     # SVD to ensure valid rotation matrix
@@ -206,7 +206,7 @@ class InferenceEngine:
 
         if outputs is None:
             logger.warn("No prediction ... 'outputs' is None!")
-            return None
+            return None, None, None, None, None
 
         val = False
         for i in outputs["pred_boxes"].detach().cpu().tolist():
@@ -217,7 +217,7 @@ class InferenceEngine:
 
         if val == False:
             logger.warn("No prediction ...")
-            return None
+            return None, None, None, None, None
 
         # TODO: Check if n_boxes_per_sample[0] is non-zero if nothing predicted
         # Iterate over all the detected predictions
@@ -226,11 +226,11 @@ class InferenceEngine:
             pred_t = np.array(outputs['pred_translation'][0][d].detach().cpu().tolist())
             pred_rot = np.array(outputs['pred_rotation'][0][d].detach().cpu().tolist())
             pred_box = np.array(outputs['pred_boxes'][0][d].detach().cpu().tolist())
-            pred_class = np.array(outputs['pred_classes'][0][d].detach().cpu().tolist())
+            pred_class = int(outputs['pred_classes'][0][d].detach().cpu())
 
             #########################
             # TODO: Refactor object!!
-            R, t = self.transform_to_cam(pred_rot, pred_t, "doll")
+            R, t = self.transform_to_cam(pred_rot, pred_t, "cabinet")
 
             img = None
             if self.draw:
@@ -252,7 +252,7 @@ class InferenceEngine:
             }
 
         self.results[frame_str] = result
-        if not result: return None
+        if not result: return None, time.time() - start_, poet_time, None, None
 
         t = mean_translation(result)
         R = mean_rotation(result)
@@ -260,12 +260,12 @@ class InferenceEngine:
         t_rmse = self.rmse_translation(t, gt.t.data())
         R_rmse = self.rmse_rotation(R, gt.R.data())
 
-        if verbose:
-            txt = f"[{frame_number:04d}] Total: {time.time() - start_:.4f}s | PoEt: {poet_time:>.4f}s | x: {t[0]:.4f} | y: {t[1]:.4f} | z : {t[2]:.4f} | RMSE (t): {t_rmse:.4f}, (R): {R_rmse:.4f}"
-            logger.succ(txt)
-            log_file.write(txt + "\n")
+        # if verbose:
+        #     txt = f"[{frame_number:04d}] Total: {time.time() - start_:.4f}s | PoEt: {poet_time:>.4f}s | x: {t[0]:.4f} | y: {t[1]:.4f} | z : {t[2]:.4f} | RMSE (t): {t_rmse:.4f}, (R): {R_rmse:.4f}"
+        #     logger.succ(txt)
+        #     log_file.write(txt + "\n")
 
-        return result
+        return result, time.time() - start_, poet_time, t_rmse, R_rmse
 
 
 # display image in pygame
@@ -302,7 +302,6 @@ def store_img(img: np.ndarray, frame: int):
     name = "frame" + str(frame) + ".png"
     # img.save(os.path.join(name))
     cv2.imwrite(os.path.join(path, name), cv2.cvtColor(img, cv2.COLOR_RGB2BGR))
-
 
 last_pose: Pose = None
 counter: int = 0
@@ -369,7 +368,7 @@ def image_thread(image_display: pygame.Surface, container):
         # Do inference
         res = None
         try:
-            res = engine.inference(frame_glob, gt, frame_number)
+            res, inf_time, poet_time, t_rmse, R_rmse = engine.inference(frame_glob, gt, frame_number)
         except Exception as error:
             logger.warn(error.with_traceback())
 
@@ -384,9 +383,9 @@ def image_thread(image_display: pygame.Surface, container):
 
         # Publish prediction as ros message
         if res:
-            for p in res:
-                t = Translation_(p["t"][0], p["t"][1], p["t"][2])
-                R = Rotation_(p["rot"])
+            for key in res:
+                t = Translation_(res[key]["t"][0], res[key]["t"][1], res[key]["t"][2])
+                R = Rotation_(res[key]["rot"])
                 pose_stamped = PoseStamped()
                 pose_stamped.header.frame_id = "world"
                 pose_stamped.pose.position.x = t.x
@@ -409,6 +408,9 @@ def image_thread(image_display: pygame.Surface, container):
         frame_skip = int((time.time() - start_time) / time_base)
 
         # print(f"total: {time.time() - start_time}s")
+        txt = f"[{frame_number:04d}] Total: {time.time() - start_time:.4f}s | PoEt: {poet_time:>.4f}s | RMSE (t): {t_rmse:.4f}, (R): {R_rmse:.4f}"
+        logger.succ(txt)
+        log_file.write(txt + "\n")
 
 
 log_file = None
@@ -475,11 +477,13 @@ if __name__ == "__main__":
     # args.lr = 0.000035
     # args.lr_drop = 50
     # args.gamma = 0.1
-    args.resume = "/home/wngicg/Desktop/repos/poet/results/train/2024-10-06_12_31_12/checkpoint.pth"
+    args.resume = "/home/wngicg/repos/poet/results/finetune/drone_data/2024-11-27_09_19_53/checkpoint.pth"
+    #args.resume = "/home/wngicg/Desktop/repos/poet/results/train/2024-10-06_12_31_12/checkpoint.pth"
     #args.resume = "/media/wngicg/USB-DATA/repos/poet/results_doll/train/2024-10-13_14_09_21/checkpoint.pth"
     args.device = "cuda"
 
-    args.dino_caption = "human with blue tshirt."
+    args.dino_caption = "black cabinet."
+    #args.dino_caption = "human with blue tshirt."
     args.dino_args = "models/groundingdino/config/GroundingDINO_SwinT_OGC.py"
     args.dino_checkpoint = "models/groundingdino/weights/groundingdino_swint_ogc.pth"
     args.dino_box_threshold = 0.35
@@ -517,6 +521,8 @@ if __name__ == "__main__":
     drone.set_loglevel(1)  # log level WARN
     speed = 30
 
+    img_thread = None
+    pose_sub = None
     try:
         drone.connect()
         drone.wait_for_connection(60.0)
@@ -535,8 +541,8 @@ if __name__ == "__main__":
 
         createFolderStructure()
 
-        key_thread = threading.Thread(target=image_thread, args=(image_display, container))
-        key_thread.start()
+        img_thread = threading.Thread(target=image_thread, args=(image_display, container))
+        img_thread.start()
         logger.succ("Image thread started!")
 
         pose_topic = "/mocap_node/tello/pose"
@@ -591,6 +597,9 @@ if __name__ == "__main__":
         for frame in engine.results:
             for i in engine.results[frame]:
                 if 'img' in engine.results[frame][i]:
+                    engine.results[frame][i]['t'] = engine.results[frame][i]['t'].tolist()
+                    engine.results[frame][i]['rot'] = engine.results[frame][i]['rot'].tolist()
+                    engine.results[frame][i]['box'] = engine.results[frame][i]['box'].tolist()
                     del engine.results[frame][i]['img']
 
         json.dump(engine.results, pred_file, indent=4)
