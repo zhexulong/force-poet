@@ -130,7 +130,7 @@ class InferenceEngine:
 
     @staticmethod
     def rmse_translation(array1: np.ndarray, array2: np.ndarray):
-        """Calculate the root mean square error (RMSE) between two arrays."""
+        """Calculate the root mean squared error (RMSE) between two arrays."""
         return np.sqrt(np.sum(np.square((array1 - array2))))
 
     @staticmethod
@@ -219,6 +219,7 @@ class InferenceEngine:
             logger.warn("No prediction ...")
             return None
 
+        # TODO: Check if n_boxes_per_sample[0] is non-zero if nothing predicted
         # Iterate over all the detected predictions
         result: dict = {}
         for d in range(n_boxes_per_sample[0]):
@@ -227,7 +228,8 @@ class InferenceEngine:
             pred_box = np.array(outputs['pred_boxes'][0][d].detach().cpu().tolist())
             pred_class = np.array(outputs['pred_classes'][0][d].detach().cpu().tolist())
 
-            # TODO: Refactor object
+            #########################
+            # TODO: Refactor object!!
             R, t = self.transform_to_cam(pred_rot, pred_t, "doll")
 
             img = None
@@ -584,7 +586,14 @@ if __name__ == "__main__":
 
         logger.info(f"Predicted {len(engine.results)} poses")
         logger.info("Saving predicted poses as json ...")
-        json.dumps(engine.results, indent=4)
+
+        # Remove images from results! We don't want to save them!
+        for frame in engine.results:
+            for i in engine.results[frame]:
+                if 'img' in engine.results[frame][i]:
+                    del engine.results[frame][i]['img']
+
+        json.dump(engine.results, pred_file, indent=4)
 
         logger.warn('Shutting down connection to drone...')
         drone.quit()
