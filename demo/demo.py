@@ -5,21 +5,15 @@ import os
 # Add the parent directory to sys.path, otherwise 'logger' from 'util' will be not found
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-import torch
 from util import logger
-from models import build_model
-import time
 import os
-import supervision as sv
 import numpy as np
-import InferenceEngine
+from InferenceEngine import InferenceEngine
 from helper import Args, controls, Pose, Rotation_, Translation_
 from PIL import Image
 from scipy.spatial.transform import Rotation
-from helper import dimensions
 import copy
 
-import torchvision.transforms.functional as F
 
 import av
 import cv2
@@ -93,7 +87,7 @@ def pose_thread(pose: PoseStamped):
         R = Rotation.from_quat([pose.pose.orientation.x, pose.pose.orientation.y, pose.pose.orientation.z,
                                 pose.pose.orientation.w]).as_matrix()
 
-        last_pose = Pose(t, R, pose.header.seq)
+        last_pose = Pose(t, R, pose.header.seq, pose.header.stamp)
         
 
 pose_pub = None
@@ -110,10 +104,20 @@ def image_thread(image_display: pygame.Surface, container):
 
     # skip first 300 frames in order to avoid delay
     frame_skip = 300
+    frame: av.video.frame.VideoFrame
     for frame in container.decode(video=0):
         if 0 < frame_skip:
             frame_skip = frame_skip - 1
             continue
+
+        # TODO: Add sanity check to skip image if no **new** pose received by optitrack system
+        # Immediately get last recorded ground-truth pose of drone
+        gt: Pose
+        if last_pose is not None:
+            gt = copy.deepcopy(last_pose)  # Ensure to get a deep-copy of the last pose, so that it won't be changed
+        else:
+            logger.warn("Got no pose, skipping inference on drone image ...")
+            continue  # If no pose recorded, skip
 
         start_time = time.time()
 
@@ -121,14 +125,6 @@ def image_thread(image_display: pygame.Surface, container):
         frame_glob = cv2.resize(tmp, (IMG_WIDTH, IMG_HEIGHT))  # Resize image appropriately for inference
         frame_glob = Image.fromarray(frame_glob).convert("RGB")
         frame_number += 1
-
-        # TODO: Add sanity check to skip image if no **new** pose received by optitrack system
-        # Immediately get last recorded ground-truth pose of drone
-        if last_pose is not None:
-            gt = copy.deepcopy(last_pose)  # Ensure to get a deep-copy of the last pose, so that it won't be changed
-        else:
-            logger.warn("Got no pose, skipping inference on drone image ...")
-            continue  # If no pose recorded, skip
 
         # Store drone image and ground-truth data
         store_img(np.array(frame_glob), frame_number)
