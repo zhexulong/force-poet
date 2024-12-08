@@ -2,6 +2,8 @@ import json
 import sys
 import os
 
+from project.dataset.bop_annotations import height
+
 # Add the parent directory to sys.path, otherwise 'logger' from 'util' will be not found
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
@@ -44,9 +46,6 @@ def display_img(frame: numpy.array, display: pygame.Surface):
 
 
 base_path: str = "demo/fly/"
-frame_number: int = 0
-frame_glob: np.array = None
-
 def store_pose(pose: Pose, frame: int):
     name = "frame" + str(frame) + ".png"
 
@@ -66,41 +65,24 @@ def store_img(img: np.ndarray, frame: int):
     # img.save(os.path.join(name))
     cv2.imwrite(os.path.join(path, name), cv2.cvtColor(img, cv2.COLOR_RGB2BGR))
 
+
 last_pose: Pose = None
-counter: int = 0
 def pose_thread(pose: PoseStamped):
-    """
-    Thread that receives the current pose of the drone from the optitrack system as PoseStamped object.
-    Stores the current drone pose into global "last_pose" variable.
-
-    """
-    global counter
-    global frame_number
-    global frame_glob
     global last_pose
+    last_pose: Pose = None
 
-    counter += 1
-    #if counter % 10 == 0 and frame_glob is not None:
-    if frame_glob is not None:
-        pose.header.frame_id = "world"
-        t = np.array([pose.pose.position.x, pose.pose.position.y, pose.pose.position.z])
-        R = Rotation.from_quat([pose.pose.orientation.x, pose.pose.orientation.y, pose.pose.orientation.z,
-                                pose.pose.orientation.w]).as_matrix()
+    pose.header.frame_id = "world"
+    t = np.array([pose.pose.position.x, pose.pose.position.y, pose.pose.position.z])
+    R = Rotation.from_quat([pose.pose.orientation.x, pose.pose.orientation.y, pose.pose.orientation.z,
+                            pose.pose.orientation.w]).as_matrix()
 
-        last_pose = Pose(t, R, pose.header.seq, pose.header.stamp)
-        
+    last_pose = Pose(t, R, pose.header.seq, pose.header.stamp)
 
-pose_pub = None
-def image_thread(image_display: pygame.Surface, container):
-    """
-    Thread that receives and decodes the current image of the drone.
-    """
-    global frame_glob
-    global frame_number
-    global engine
-    global last_pose
-    global IMG_WIDTH, IMG_HEIGHT
-    global pose_pub
+
+frame_glob: Image = None
+def image_thread(container: av.container.InputContainer):
+    global frame_glob, frame_number
+    frame_glob: Image = None
 
     # skip first 300 frames in order to avoid delay
     frame_skip = 300
@@ -110,41 +92,67 @@ def image_thread(image_display: pygame.Surface, container):
             frame_skip = frame_skip - 1
             continue
 
-        # TODO: Add sanity check to skip image if no **new** pose received by optitrack system
-        # Immediately get last recorded ground-truth pose of drone
+        # tmp = np.array(frame.to_image())  # Convert frame to numpy array
+        # frame_glob = cv2.resize(tmp, (IMG_WIDTH, IMG_HEIGHT))  # Resize image appropriately for inference
+        # frame_glob = Image.fromarray(frame_glob).convert("RGB")
+        frame_glob = frame.to_image(width=IMG_WIDTH, height=IMG_HEIGHT)
+
+
+frame_number: int = 0
+pose_pub = None
+def inference_thread(image_display: pygame.Surface):
+    global frame_glob
+    global frame_number
+    global engine
+    global last_pose
+    global IMG_WIDTH, IMG_HEIGHT
+    global pose_pub
+
+    last_pose: Pose = None
+    while True:
+        # Immediately get last recorded ground-truth pose and image of drone
         gt: Pose
         if last_pose is not None:
             gt = copy.deepcopy(last_pose)  # Ensure to get a deep-copy of the last pose, so that it won't be changed
+            if last_pose.id >= gt.id: # Only accept poses that are younger than previous
+                continue
         else:
-            logger.warn("Got no pose, skipping inference on drone image ...")
+            logger.warn(f"[{frame_number:04d}] Got no pose, skipping inference on drone image ...")
             continue  # If no pose recorded, skip
 
-        start_time = time.time()
+        frame: Image
+        if frame_glob is not None:
+            frame = copy.deepcopy(frame_glob)
+        else:
+            logger.warn(f"[{frame_number:04d}] Got no frame, skipping inference on drone image ...")
+            continue
 
-        tmp = np.array(frame.to_image())  # Convert frame to numpy array
-        frame_glob = cv2.resize(tmp, (IMG_WIDTH, IMG_HEIGHT))  # Resize image appropriately for inference
-        frame_glob = Image.fromarray(frame_glob).convert("RGB")
+        start_time = time.time()
         frame_number += 1
 
         # Store drone image and ground-truth data
-        store_img(np.array(frame_glob), frame_number)
+        store_img(np.array(frame), frame_number)
         store_pose(gt, frame_number)
 
-        # Do inference
+        # Do inference ...
         res = None
         try:
             res, inf_time, poet_time, t_rmse, R_rmse = engine.inference(frame_glob, gt, frame_number)
         except Exception as error:
             logger.warn(error.with_traceback())
+            continue
 
         # Display annotated image
         if res and res[0] and "img" in res[0]:
             display_img(res[0]["img"], image_display)
+
             # path = bbox_folder
             # name = f"frame{frame_number}_1.png"
             # cv2.imwrite(os.path.join(path, name), cv2.cvtColor(res[0]["img"], cv2.COLOR_RGB2BGR))
         else:
             display_img(np.array(frame_glob), image_display)
+            logger.warn(f"[{frame_number:04d}] Got no prediction for frame ...")
+            continue
 
         # Publish prediction as ros message
         if res:
@@ -163,14 +171,6 @@ def image_thread(image_display: pygame.Surface, container):
                 pose_stamped.pose.orientation.w = R.w
 
                 pose_pub.publish(pose_stamped)
-
-        # TODO: Check if below works as expected
-        # We want to skip the frames since the last processed frame in order to avoid delay
-        if frame.time_base < 1.0 / 60:
-            time_base = 1.0 / 60
-        else:
-            time_base = frame.time_base
-        frame_skip = int((time.time() - start_time) / time_base)
 
         # print(f"total: {time.time() - start_time}s")
         txt = f"[{frame_number:04d}] Total: {time.time() - start_time:.4f}s | PoEt: {poet_time:>.4f}s | RMSE (t): {t_rmse:.4f}, (R): {R_rmse:.4f}"
@@ -293,7 +293,7 @@ if __name__ == "__main__":
         drone.wait_for_connection(60.0)
 
         retry = 3
-        container = None
+        container: av.container.InputContainer = None
 
         # get video stream from drone
         while container is None and 0 < retry:
@@ -306,9 +306,13 @@ if __name__ == "__main__":
 
         createFolderStructure()
 
-        img_thread = threading.Thread(target=image_thread, args=(image_display, container))
+        img_thread = threading.Thread(target=image_thread, args=container)
         img_thread.start()
         logger.succ("Image thread started!")
+
+        inf_thread = threading.Thread(target=inference_thread, args=image_display)
+        inf_thread.start()
+        logger.succ("Inference thread started!")
 
         pose_topic = "/mocap_node/tello/pose"
         pose_sub = rospy.Subscriber(pose_topic, PoseStamped, callback=pose_thread)
