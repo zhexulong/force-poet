@@ -1,5 +1,34 @@
 import numpy as np
+from scipy.spatial.transform import Rotation
 
+
+class Translation_:
+    def __init__(self, x, y, z):
+        self.x = x
+        self.y = y
+        self.z = z
+
+    def data(self):
+        return np.array([self.x, self.y, self.z])
+
+class Rotation_:
+    def __init__(self, R: np.ndarray):
+        if R.size == 4: # Quaternion
+            self.x, self.y, self.z, self.w = R[0], R[1], R[2], R[3]
+            self.R = Rotation.from_quat([R[0], R[1], R[2], R[3]]).as_matrix()
+        else:
+            # TODO: Check if this is correct!!!
+            quat = Rotation.from_matrix(R).as_quat()
+            self.x, self.y, self.z, self.w = quat[0], quat[1], quat[2], quat[3]
+            self.R = R
+
+    def data(self):
+        return self.R
+
+class Pose:
+    def __init__(self, t: np.ndarray, R: np.ndarray, seq: int):
+        self.t = Translation_(t[0], t[1], t[2])
+        self.R = Rotation_(R)
 
 class Args:
   def __init__(self):
