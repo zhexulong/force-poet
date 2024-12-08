@@ -1,4 +1,5 @@
 import numpy as np
+import rospy
 from scipy.spatial.transform import Rotation
 
 
@@ -26,9 +27,11 @@ class Rotation_:
         return self.R
 
 class Pose:
-    def __init__(self, t: np.ndarray, R: np.ndarray, seq: int):
+    def __init__(self, t: np.ndarray, R: np.ndarray, id: int, timestamp: rospy.Time):
         self.t = Translation_(t[0], t[1], t[2])
         self.R = Rotation_(R)
+        self.id = id
+        self.timestamp = timestamp
 
 class Args:
   def __init__(self):
