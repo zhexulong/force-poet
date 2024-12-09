@@ -1,7 +1,7 @@
 import numpy as np
 import torch
 import time
-from helper import Rotation_, Translation_, Pose, Args, dimensions
+from helper import Rotation_, Translation_, Pose, Args, dimensions, IMG_WIDTH, IMG_HEIGHT
 from models import build_model
 import sys, os
 from PIL import Image

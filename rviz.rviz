@@ -66,7 +66,7 @@ Visualization Manager:
       Queue Size: 10
       Shaft Length: 0.5
       Shaft Radius: 0.05000000074505806
-      Shape: Arrow
+      Shape: Axes
       Topic: /pose_out
       Unreliable: false
       Value: true
@@ -82,7 +82,7 @@ Visualization Manager:
       Queue Size: 10
       Shaft Length: 0.5
       Shaft Radius: 0.05000000074505806
-      Shape: Arrow
+      Shape: Axes
       Topic: /mocap_node/tello/pose
       Unreliable: false
       Value: true
@@ -123,7 +123,7 @@ Visualization Manager:
   Views:
     Current:
       Class: rviz/Orbit
-      Distance: 9.487289428710938
+      Distance: 10.735756874084473
       Enable Stereo Rendering:
         Stereo Eye Separation: 0.05999999865889549
         Stereo Focal Distance: 1
@@ -131,17 +131,17 @@ Visualization Manager:
         Value: false
       Field of View: 0.7853981852531433
       Focal Point:
-        X: 0.9208095669746399
-        Y: -0.9843465089797974
-        Z: -1.0597057342529297
+        X: 1.232674241065979
+        Y: -1.9407120943069458
+        Z: -1.277430772781372
       Focal Shape Fixed Size: true
       Focal Shape Size: 0.05000000074505806
       Invert Z Axis: false
       Name: Current View
       Near Clip Distance: 0.009999999776482582
-      Pitch: 0.4703978896141052
+      Pitch: 0.755397617816925
       Target Frame: <Fixed Frame>
-      Yaw: 6.198584079742432
+      Yaw: 6.238584995269775
     Saved: ~
 Window Geometry:
   Displays:

@@ -2,6 +2,8 @@ import numpy as np
 import rospy
 from scipy.spatial.transform import Rotation
 
+IMG_WIDTH = 640
+IMG_HEIGHT = 480
 
 class Translation_:
     def __init__(self, x, y, z):

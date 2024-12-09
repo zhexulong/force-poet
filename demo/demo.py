@@ -2,8 +2,6 @@ import json
 import sys
 import os
 
-from project.dataset.bop_annotations import height
-
 # Add the parent directory to sys.path, otherwise 'logger' from 'util' will be not found
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
@@ -11,7 +9,7 @@ from util import logger
 import os
 import numpy as np
 from InferenceEngine import InferenceEngine
-from helper import Args, controls, Pose, Rotation_, Translation_
+from helper import Args, controls, Pose, Rotation_, Translation_, IMG_WIDTH, IMG_HEIGHT
 from PIL import Image
 from scipy.spatial.transform import Rotation
 import copy
@@ -31,6 +29,9 @@ from geometry_msgs.msg import PoseStamped
 import warnings
 
 warnings.filterwarnings("ignore", category=DeprecationWarning)
+
+
+STOP_THREADS = False
 
 
 # display image in pygame
@@ -69,7 +70,6 @@ def store_img(img: np.ndarray, frame: int):
 last_pose: Pose = None
 def pose_thread(pose: PoseStamped):
     global last_pose
-    last_pose: Pose = None
 
     pose.header.frame_id = "world"
     t = np.array([pose.pose.position.x, pose.pose.position.y, pose.pose.position.z])
@@ -82,7 +82,6 @@ def pose_thread(pose: PoseStamped):
 frame_glob: Image = None
 def image_thread(container: av.container.InputContainer):
     global frame_glob, frame_number
-    frame_glob: Image = None
 
     # skip first 300 frames in order to avoid delay
     frame_skip = 300
@@ -97,6 +96,9 @@ def image_thread(container: av.container.InputContainer):
         # frame_glob = Image.fromarray(frame_glob).convert("RGB")
         frame_glob = frame.to_image(width=IMG_WIDTH, height=IMG_HEIGHT)
 
+        if STOP_THREADS == True:
+            return
+
 
 frame_number: int = 0
 pose_pub = None
@@ -108,23 +110,26 @@ def inference_thread(image_display: pygame.Surface):
     global IMG_WIDTH, IMG_HEIGHT
     global pose_pub
 
-    last_pose: Pose = None
     while True:
         # Immediately get last recorded ground-truth pose and image of drone
         gt: Pose
         if last_pose is not None:
             gt = copy.deepcopy(last_pose)  # Ensure to get a deep-copy of the last pose, so that it won't be changed
-            if last_pose.id >= gt.id: # Only accept poses that are younger than previous
-                continue
+            # if last_pose and last_pose.id >= gt.id: # Only accept poses that are younger than previous
+            #     continue
         else:
-            logger.warn(f"[{frame_number:04d}] Got no pose, skipping inference on drone image ...")
+            if STOP_THREADS == True:
+                return
+            # logger.warn(f"[{frame_number:04d}] Got no pose, skipping inference on drone image ...")
             continue  # If no pose recorded, skip
 
         frame: Image
         if frame_glob is not None:
             frame = copy.deepcopy(frame_glob)
         else:
-            logger.warn(f"[{frame_number:04d}] Got no frame, skipping inference on drone image ...")
+            if STOP_THREADS == True:
+                return
+            # logger.warn(f"[{frame_number:04d}] Got no frame, skipping inference on drone image ...")
             continue
 
         start_time = time.time()
@@ -177,6 +182,9 @@ def inference_thread(image_display: pygame.Surface):
         logger.succ(txt)
         log_file.write(txt + "\n")
 
+        if STOP_THREADS == True:
+            return 
+
 
 log_file = None
 pred_file = None
@@ -201,10 +209,6 @@ def createFolderStructure():
     pred_file = open(f"{base_path}/imgs_%s/pred.txt" % i, "w")
     gt_file = open(f"{base_path}/imgs_%s/gt_cam.txt" % i, "w")
     log_file = open(f"{base_path}/imgs_%s/log.txt" % i, "w")
-
-
-IMG_WIDTH = 640
-IMG_HEIGHT = 480
 
 engine: InferenceEngine = None
 if __name__ == "__main__":
@@ -247,8 +251,8 @@ if __name__ == "__main__":
     #args.resume = "/media/wngicg/USB-DATA/repos/poet/results_doll/train/2024-10-13_14_09_21/checkpoint.pth"
     args.device = "cuda"
 
-    args.dino_caption = "black cabinet."
-    #args.dino_caption = "human with blue tshirt."
+    #args.dino_caption = "black cabinet."
+    args.dino_caption = "human with blue t-shirt."
     args.dino_args = "models/groundingdino/config/GroundingDINO_SwinT_OGC.py"
     args.dino_checkpoint = "models/groundingdino/weights/groundingdino_swint_ogc.pth"
     args.dino_box_threshold = 0.35
@@ -306,16 +310,16 @@ if __name__ == "__main__":
 
         createFolderStructure()
 
-        img_thread = threading.Thread(target=image_thread, args=container)
+        img_thread = threading.Thread(target=image_thread, args=(container,))
         img_thread.start()
         logger.succ("Image thread started!")
 
-        inf_thread = threading.Thread(target=inference_thread, args=image_display)
+        inf_thread = threading.Thread(target=inference_thread, args=(image_display,))
         inf_thread.start()
         logger.succ("Inference thread started!")
 
         pose_topic = "/mocap_node/tello/pose"
-        pose_sub = rospy.Subscriber(pose_topic, PoseStamped, callback=pose_thread)
+        pose_sub = rospy.Subscriber(pose_topic, PoseStamped, callback=pose_thread, queue_size=100)
         logger.succ("Pose thread started!")
 
         pose_pub = rospy.Publisher("/pose_out", PoseStamped)
@@ -334,7 +338,8 @@ if __name__ == "__main__":
                     # check if pressed key was escape (shutdown program)
                     if keyname == 'escape':
                         drone.quit()
-                        exit(0)
+                        raise Exception("Termination signal received ...")
+                    
                     # check if pressed key was one of controls dict from above
                     if keyname in controls:
                         key_handler = controls[keyname]
@@ -358,6 +363,11 @@ if __name__ == "__main__":
         logger.err(str(e))
     finally:
         logger.warn("Exiting PoET demo script!")
+
+        STOP_THREADS = True
+
+        img_thread.join()
+        inf_thread.join()
 
         logger.info(f"Predicted {len(engine.results)} poses")
         logger.info("Saving predicted poses as json ...")
