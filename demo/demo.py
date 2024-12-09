@@ -80,16 +80,16 @@ def pose_thread(pose: PoseStamped):
 
 
 frame_glob: Image = None
-def image_thread(container: av.container.InputContainer):
+def image_thread(container):
     global frame_glob, frame_number
 
     # skip first 300 frames in order to avoid delay
     frame_skip = 300
     frame: av.video.frame.VideoFrame
     for frame in container.decode(video=0):
-        if 0 < frame_skip:
-            frame_skip = frame_skip - 1
-            continue
+        # if 0 < frame_skip:
+        #     frame_skip = frame_skip - 1
+        #     continue
 
         # tmp = np.array(frame.to_image())  # Convert frame to numpy array
         # frame_glob = cv2.resize(tmp, (IMG_WIDTH, IMG_HEIGHT))  # Resize image appropriately for inference
@@ -140,7 +140,7 @@ def inference_thread(image_display: pygame.Surface):
         store_pose(gt, frame_number)
 
         # Do inference ...
-        res = None
+        res: dict = None
         try:
             res, inf_time, poet_time, t_rmse, R_rmse = engine.inference(frame_glob, gt, frame_number)
         except Exception as error:
@@ -155,11 +155,14 @@ def inference_thread(image_display: pygame.Surface):
             # name = f"frame{frame_number}_1.png"
             # cv2.imwrite(os.path.join(path, name), cv2.cvtColor(res[0]["img"], cv2.COLOR_RGB2BGR))
         else:
+            if STOP_THREADS == True:
+                return
             display_img(np.array(frame_glob), image_display)
             logger.warn(f"[{frame_number:04d}] Got no prediction for frame ...")
             continue
 
         # Publish prediction as ros message
+        t = Translation_()
         if res:
             for key in res:
                 t = Translation_(res[key]["t"][0], res[key]["t"][1], res[key]["t"][2])
@@ -178,7 +181,8 @@ def inference_thread(image_display: pygame.Surface):
                 pose_pub.publish(pose_stamped)
 
         # print(f"total: {time.time() - start_time}s")
-        txt = f"[{frame_number:04d}] Total: {time.time() - start_time:.4f}s | PoEt: {poet_time:>.4f}s | RMSE (t): {t_rmse:.4f}, (R): {R_rmse:.4f}"
+        #txt = f"[{frame_number:04d}] Total: {time.time() - start_time:.4f}s | PoEt: {poet_time:>.4f}s | RMSE (t): {t_rmse:.4f}, (R): {R_rmse:.4f}"
+        txt = f"[{frame_number:04d}] Total: {time.time() - start_time:.4f}s | PoEt: {poet_time:>.4f}s | x: {gt.t.x:.4f} | y: {gt.t.y:.4f} | z : {gt.t.z:.4f} | RMSE (t): {t_rmse:.4f}, (R): {R_rmse:.4f}"
         logger.succ(txt)
         log_file.write(txt + "\n")
 
@@ -297,7 +301,7 @@ if __name__ == "__main__":
         drone.wait_for_connection(60.0)
 
         retry = 3
-        container: av.container.InputContainer = None
+        container = None
 
         # get video stream from drone
         while container is None and 0 < retry:
@@ -313,6 +317,9 @@ if __name__ == "__main__":
         img_thread = threading.Thread(target=image_thread, args=(container,))
         img_thread.start()
         logger.succ("Image thread started!")
+
+        while frame_glob is None:
+            time.sleep(0.5)
 
         inf_thread = threading.Thread(target=inference_thread, args=(image_display,))
         inf_thread.start()
