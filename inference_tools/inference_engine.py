@@ -112,6 +112,9 @@ def inference(args):
         # Iterate over all the detected predictions
         img_file = data_loader_inference.dataset.image_paths[i]
         img_id = img_file[img_file.find("_")+1:img_file.rfind(".")]
+
+        annotated_frame = cv2.imread(str(os.path.join(args.inference_path, img_file)))
+
         results[img_id] = {}
         for d in range(n_boxes_per_sample[0]):
             pred_t = outputs['pred_translation'][0][d].detach().cpu().tolist()
@@ -131,13 +134,14 @@ def inference(args):
             # Draw predicted bounding box and save to output folder
             detections = sv.Detections(xyxy=np.array([transform_bbox(pred_box, (640, 480))]), class_id=np.array([pred_class])) # transform normalized cxcywh to xyxy
             box_annotator = sv.BoundingBoxAnnotator()
-            annotated_frame = cv2.imread(str(os.path.join(args.inference_path, img_file)))
+
             annotated_frame = box_annotator.annotate(scene=annotated_frame, detections=detections)
-            cv2.imwrite(args.inference_output + "bbox/" + img_id + ".png", annotated_frame)
+
             # cv2.imshow('frame', annotated_frame)
             # cv2.waitKey(-1)
             # cv2.destroyAllWindows()
 
+        cv2.imwrite(args.inference_output + "bbox/" + img_id + ".png", annotated_frame)
         samples, targets = prefetcher.next()
 
     print("-------------------")
