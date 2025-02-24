@@ -468,8 +468,8 @@ class YOLODINOBackbone(nn.Module):
       ################################
       # BBox Visualization
       #
-      # if self.args.dino_bbox_viz:
-      if True:
+      if self.args.dino_bbox_viz:
+      # if True:
           pred_dict = {
               "boxes": boxes_.cpu(),
               "size": [h, w],  # H,W
