@@ -210,7 +210,7 @@ def createFolderStructure():
     bbox_folder = f"{base_path}/imgs_%s/bbox" % i
     os.makedirs(bbox_folder)
 
-    pred_file = open(f"{base_path}/imgs_%s/pred.txt" % i, "w")
+    pred_file = open(f"{base_path}/imgs_%s/pred.json" % i, "w")
     gt_file = open(f"{base_path}/imgs_%s/gt_cam.txt" % i, "w")
     log_file = open(f"{base_path}/imgs_%s/log.txt" % i, "w")
 
