@@ -239,9 +239,9 @@ def pose_evaluate(model, matcher, pose_evaluator, data_loader, image_set, bbox_m
     print("Start Calculating ADD(-S)")
     pose_evaluator.evaluate_pose_adds(output_eval_dir)
     print("Start Calculating Average Translation Error")
-    pose_evaluator.calculate_class_avg_translation_error(output_eval_dir)
+    avg_trans = pose_evaluator.calculate_class_avg_translation_error(output_eval_dir, epoch)
     print("Start Calculating Average Rotation Error")
-    pose_evaluator.calculate_class_avg_rotation_error(output_eval_dir)
+    avg_rot = pose_evaluator.calculate_class_avg_rotation_error(output_eval_dir, epoch)
     total_time = time.time() - start_time
     total_time_str = str(datetime.timedelta(seconds=int(total_time)))
     print("Evaluation time: {}".format(total_time_str))
