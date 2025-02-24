@@ -139,11 +139,12 @@ def pose_evaluate(model, matcher, pose_evaluator, data_loader, image_set, bbox_m
 
     # Check whether the evaluation folder exists, otherwise create it
     if epoch is not None:
-        output_eval_dir = output_dir + "/eval_" + image_set + "_" + bbox_mode + "_" + str(epoch) + "/"
+        output_eval_dir = os.path.join(output_dir, "eval_" + image_set + "_" + bbox_mode + "_" + str(epoch))
     else:
-        output_eval_dir = output_dir + "/eval_" + image_set + "_" + bbox_mode + "/"
+        output_eval_dir = os.path.join(output_dir, "eval_" + image_set + "_" + bbox_mode)
     Path(output_eval_dir).mkdir(parents=True, exist_ok=True)
 
+    output_eval_dir += "/"
     print("Process validation dataset:")
     n_images = len(data_loader.dataset.ids)
     bs = data_loader.batch_size
@@ -162,7 +163,7 @@ def pose_evaluate(model, matcher, pose_evaluator, data_loader, image_set, bbox_m
         # Visualize and save bounding boxes
         # for i in range(samples.tensors.shape[0]):
         #   image_tensor = samples.tensors[i]
-        #   image_np = image_tensor.permute(1, 2, 0).cpu().numpy()  # Convert to HxWxC format
+        #   image_np = image_tensor.permute(1, 2, 0).cpu().numpy()  # Convert from CxHxW to HxWxC format
         #   image_np = np.clip(image_np * 255, 0, 255).astype(np.uint8)
         #   image_cv = cv2.cvtColor(image_np, cv2.COLOR_RGB2BGR)
         #

@@ -178,6 +178,8 @@ class PoET(nn.Module):
         image_sizes = [[sample.shape[-2], sample.shape[-1]] for sample in samples.tensors]
         features, pos, pred_objects = self.backbone(samples)
 
+        assert samples.tensors.shape[0] == len(pred_objects), "Number of predictions must match number of images!"
+
         # TODO: Refactor case of no predictions
         if len(pred_objects) == 0:
             return None, None

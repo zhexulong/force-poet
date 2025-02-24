@@ -78,7 +78,10 @@ def build_pose_evaluator(args):
     """
     Function to build the Pose Evaluator by loading the 3D point clouds and additional information.
     """
-    classes_path = args.dataset_path + args.class_info
+    if args.class_info[0] == "/":
+        args.class_info = args.class_info[1:]
+
+    classes_path = os.path.join(args.dataset_path, args.class_info)
     classes = load_classes(classes_path)
 
     models_path = args.dataset_path + args.models
