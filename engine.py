@@ -208,7 +208,8 @@ def pose_evaluate(model, matcher, pose_evaluator, data_loader, image_set, bbox_m
         # Iterate over all predicted objects and save them in the pose evaluator
         for cls_idx, img_file, intrinsic, pred_translation, pred_rotation, tgt_translation, tgt_rotation in \
                 zip(obj_classes_idx, img_files, intrinsics, pred_translations, pred_rotations, tgt_translations, tgt_rotations):
-            cls = pose_evaluator.classes[cls_idx - 1]
+            # cls = pose_evaluator.classes[cls_idx - 1]
+            cls = pose_evaluator.classes_map[str(cls_idx)]
             pose_evaluator.poses_pred[cls].append(
                 np.concatenate((pred_rotation, pred_translation.reshape(3, 1)), axis=1))
             pose_evaluator.poses_gt[cls].append(

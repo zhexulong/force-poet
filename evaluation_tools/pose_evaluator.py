@@ -34,7 +34,8 @@ class PoseEvaluator(object):
             - model_symmetry: Indication whether the 3D model of a certain class is symmetric (axis, plane) or not.
         """
         self.models = models
-        self.classes = classes
+        self.classes = [classes[k] for k in classes]
+        self.classes_map = classes
         self.models_info = model_info
         self.model_symmetry = model_symmetry
 

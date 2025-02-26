@@ -93,7 +93,7 @@ def inference(args):
     out_file_name = "args.txt"
     args_dict = vars(args)
     table_data = [[key, value] for key, value in args_dict.items()]
-    with open(args.inference_output + out_file_name, "w") as f:
+    with open(os.path.join(args.inference_output, out_file_name), "w") as f:
         f.write(tabulate(table_data, headers=["Argument", "Value"], tablefmt="rounded_outline"))
 
     start = time.time()
@@ -141,7 +141,7 @@ def inference(args):
             # cv2.waitKey(-1)
             # cv2.destroyAllWindows()
 
-        cv2.imwrite(args.inference_output + "bbox/" + img_id + ".png", annotated_frame)
+        cv2.imwrite(os.path.join(args.inference_output, "bbox/") + img_id + ".png", annotated_frame)
         samples, targets = prefetcher.next()
 
     print("-------------------")
@@ -151,7 +151,7 @@ def inference(args):
 
     # Store the results json-file
     out_file_name = "results.json"
-    with open(args.inference_output + out_file_name, 'w') as out_file:
+    with open(os.path.join(args.inference_output, out_file_name), 'w') as out_file:
         json.dump(results, out_file)
     return
 
