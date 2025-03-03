@@ -174,10 +174,7 @@ class YOLODINOBackbone(nn.Module):
       for key, value in self.class_info.items():
         self.map[value] = int(key)
 
-    self.vectorizer = TfidfVectorizer()
-    self.tfidf = self.vectorizer.fit_transform(self.map.keys())
-
-    ## TODO: Refactore single label classification caption for dino
+    ## TODO: Refactor single label classification caption for dino
     self.dino_caption = None
     self.token_spans = None
 
@@ -194,7 +191,9 @@ class YOLODINOBackbone(nn.Module):
 
         d = []
         for key, val in self.class_info.items():
-            v = val[4:].replace('_', ' ')
+            v = val
+            if dataset == "ycbv":
+                v = v[4:].replace('_', ' ')
             d.append({
                 "id": int(key),
                 "name": v,
@@ -363,7 +362,7 @@ class YOLODINOBackbone(nn.Module):
       prediction_boxes = outputs["pred_boxes"][idx]  # prediction_boxes.shape = (nq, 4)
 
 
-      # If token_spans given, then we are in "category" mode
+      # If token_spans given, then we are in "category"/"phrase" mode
       if self.token_spans:
           positive_maps = self.create_positive_map_from_span(
               model.tokenizer(caption_),
@@ -398,7 +397,7 @@ class YOLODINOBackbone(nn.Module):
 
               yield boxes_filt, logits_filt, pred_phrases
       else:
-          # If token_spans not given, we are in "phrase" mode, describing the object(s)
+          # If token_spans not given, we are in the mode of describing the object's appearance
           mask = prediction_logits.max(dim=1)[0] > box_threshold
           logits = prediction_logits[mask]  # logits.shape = (n, 256)
           boxes = prediction_boxes[mask]  # boxes.shape = (n, 4)
@@ -426,6 +425,28 @@ class YOLODINOBackbone(nn.Module):
             ]
 
           yield boxes, logits.max(dim=1)[0], phrases
+          # # TODO: Optimize this! The torch operations add latency!
+          # logits = logits.max(dim=1)[0]
+          # if self.class_mode == "specific":
+          #     b = torch.empty((0, 4), device=boxes.device)
+          #     l = torch.tensor([], device=logits.device)
+          #     p = []
+          #     for idx, (box, logit, phrase) in enumerate(zip(boxes, logits, phrases)):
+          #       label_vec = self.vectorizer.transform([phrase])
+          #       cos_sim = cosine_similarity(label_vec, self.tfidf).flatten()
+          #
+          #       if any(v >= self.args.dino_cos_sim for v in cos_sim):  # If not a single label matches 10% of pred label
+          #           best_match_idx = np.argmax(cos_sim)
+          #           best_match = list(self.map.keys())[best_match_idx]
+          #           p.append(best_match)
+          #           b = torch.cat([b, box.view(1, 4)], 0)
+          #           l = torch.cat([l, logit.unsqueeze(dim=0)])
+          #
+          #     yield b, l, p
+          # else:
+          #     yield boxes, logits, phrases
+
+
 
   def normalizeImages(self, images):
     """
@@ -503,16 +524,7 @@ class YOLODINOBackbone(nn.Module):
         for box, logits, label in zip(boxes, logits, phrases):
           pred = None
           if self.class_mode == "specific":
-            label_vec = self.vectorizer.transform([label])
-            cos_sim = cosine_similarity(label_vec, self.tfidf).flatten()
-
-            if all(v <= self.args.dino_cos_sim for v in cos_sim):  # If not a single label matches 10% of pred label
-              continue
-
-            best_match_idx = np.argmax(cos_sim)
-            best_match = list(self.map.keys())[best_match_idx]
-            cls = self.map[best_match]
-
+            cls = self.map[label]
             pred = torch.hstack((box, logits, torch.tensor(cls).to("cuda")))
           else:
             pred = torch.hstack((box, logits, torch.tensor(-1).to("cuda")))
