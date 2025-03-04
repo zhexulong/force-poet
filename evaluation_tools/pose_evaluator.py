@@ -20,7 +20,7 @@ import numpy.linalg as LA
 
 
 class PoseEvaluator(object):
-    def __init__(self, models, classes, model_info, model_symmetry, depth_scale=0.1, training=False):
+    def __init__(self, models, classes, model_info, model_symmetry, depth_scale=0.1):
         """
         Initialization of the Pose Evaluator for the YCB-V dataset.
 
@@ -49,7 +49,7 @@ class PoseEvaluator(object):
         self.reset()  # Initialize
 
         self.writer = None
-        self.training = training
+        self.training = False
         self.testing = False
 
     def reset(self):

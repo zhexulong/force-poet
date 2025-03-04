@@ -201,6 +201,30 @@ def get_args_parser():
 
     return parser
 
+def test(pose_evaluator, model, matcher, args, device, output_dir: Path, epoch: int = None):
+    if args.test_set is not None:
+        print('Start testing...')
+        test_start_time = time.time()
+
+        dataset_test = build_dataset(image_set=args.test_set, args=args)
+        sampler_test = torch.utils.data.SequentialSampler(dataset_test)
+        data_loader_test = DataLoader(dataset_test, args.eval_batch_size, sampler=sampler_test,
+                                      drop_last=False, collate_fn=utils.collate_fn, num_workers=args.num_workers,
+                                      pin_memory=True)
+
+        avg_trans_err, avg_rot_err = pose_evaluate(model, matcher, pose_evaluator, data_loader_test, args.test_set,
+                                                   args.bbox_mode,
+                                                   args.rotation_representation, device, str(output_dir), epoch)
+
+        test_total_time = time.time() - test_start_time
+        test_total_time_str = str(datetime.timedelta(seconds=int(test_total_time)))
+        print('Testing time {}'.format(test_total_time_str))
+
+        return avg_trans_err, avg_rot_err, test_total_time
+    else:
+        print("Cannot test model because args.test_set is None! Skipping testing ...")
+        return None, None, None
+
 
 def main(args):
     if args.distributed:
@@ -295,8 +319,6 @@ def main(args):
         model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu], find_unused_parameters=True)
         model_without_ddp = model.module
 
-    n_parameters = sum(p.numel() for p in model.parameters() if p.requires_grad)
-
     headers = ["Argument", "Value", "Description"]
     data = [
       ["Flags", ""],
@@ -344,11 +366,13 @@ def main(args):
       ["Inference Output", str(args.inference_output)],
     ]
 
+    n_parameters = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print(tabulate(data, headers=headers, tablefmt="rounded_outline"))
     print("")
     print('Number of params:', n_parameters)
     print("")
 
+    # Prepare output directory path
     output_dir = Path(args.output_dir)
     if "train" in args.output_dir or "tune" in args.output_dir:
       output_dir = Path(os.path.join(output_dir, datetime.datetime.now().strftime("%Y-%m-%d_%H:%M:%S")))
@@ -358,8 +382,6 @@ def main(args):
 
     with open(Path(output_dir, "args.txt"), "w") as f:
       f.write(tabulate(data, headers=headers, tablefmt="rounded_outline"))
-
-
 
     # Load checkpoint
     if args.resume:
@@ -402,12 +424,15 @@ def main(args):
             args.start_epoch = checkpoint['epoch'] + 1
 
     # Evaluate the models performance
+    eval_epoch = None
     if args.eval:
         if args.resume:
             eval_epoch = checkpoint['epoch']
         else:
             eval_epoch = None
 
+        pose_evaluator.training = False
+        pose_evaluator.testing = False
         pose_evaluate(model, matcher, pose_evaluator, data_loader_val, args.eval_set, args.bbox_mode,
                       args.rotation_representation, device, args.output_dir, eval_epoch)
         return
@@ -415,18 +440,27 @@ def main(args):
     # Evaluate the model for the BOP challenge
     if args.eval_bop:
         print(args.dataset)
+        pose_evaluator.training = False
+        pose_evaluator.testing = False
         bop_evaluate(model, matcher, data_loader_val, args.eval_set, args.bbox_mode,
                      args.rotation_representation, device, args.output_dir)
+        return
+
+    if args.test:
+        pose_evaluator.training = False
+        pose_evaluator.testing = False
+        avg_trans_err, avg_rot_err, test_total_time_str = test(pose_evaluator, model, matcher, args, device, output_dir, eval_epoch)
         return
 
     print("Start training")
     start_time = time.time()
     writer = CorrectedSummaryWriter(os.path.join(output_dir))
     pose_evaluator.writer = writer
+    pose_evaluator.training = True
 
+    epoch = 0
     try:
         best_loss = sys.float_info.max
-        epoch = 0
         for epoch in range(args.start_epoch, args.epochs):
             if args.distributed:
                 sampler_train.set_epoch(epoch)
@@ -511,31 +545,13 @@ def main(args):
         traceback.print_exc()
         err("Exiting program ...")
 
-    test_total_time_str = ""
-    if args.test_set is not None:
-        print('Test final trained model')
-        test_start_time = time.time()
+    pose_evaluator.testing = True
+    avg_trans_err, avg_rot_err, test_total_time_str = test(pose_evaluator, model, matcher, args, device, output_dir, epoch)
 
-        # Switch mode of evaluator to "testing" for tensorboard logging
-        pose_evaluator.testing = True
-        dataset_test = build_dataset(image_set=args.test_set, args=args)
-        sampler_test = torch.utils.data.SequentialSampler(dataset_test)
-        data_loader_test = DataLoader(dataset_test, args.eval_batch_size, sampler=sampler_test,
-                                      drop_last=False, collate_fn=utils.collate_fn, num_workers=args.num_workers,
-                                      pin_memory=True)
+    writer.add_scalar("Test/avg_trans_err", avg_trans_err, epoch)
+    writer.add_scalar("Test/avg_rot_err", avg_rot_err, epoch)
 
-        avg_trans_err, avg_rot_err = pose_evaluate(model, matcher, pose_evaluator, data_loader_test, args.test_set, args.bbox_mode,
-                      args.rotation_representation, device, str(output_dir), epoch)
-
-        writer.add_scalar("Test/avg_trans_err", avg_trans_err, epoch)
-        writer.add_scalar("Test/avg_rot_err", avg_rot_err, epoch)
-
-        test_total_time = time.time() - test_start_time
-        test_total_time_str = str(datetime.timedelta(seconds=int(test_total_time)))
-        print('Testing time {}'.format(test_total_time_str))
-    else:
-        print("Cannot test model because args.test_set is None! Skipping testing ...")
-
+    # --------------------
     # Log Hyperparameters
     writer.add_hparams(
       {
@@ -559,6 +575,8 @@ def main(args):
 
     writer.close()
 
+    # --------------------------
+    # Log training/test times
     total_time = time.time() - start_time
     total_time_str = str(datetime.timedelta(seconds=int(total_time)))
     print('Training time {}'.format(total_time_str))
