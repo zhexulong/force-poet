@@ -168,15 +168,12 @@ class YOLODINOBackbone(nn.Module):
       for key, value in self.class_info.items():
         new_key = value[4:].replace('_', ' ')
         self.map[new_key] = int(key)
-    elif dataset == "icmi":
+    else:
       for key, value in self.class_info.items():
         new_key = value.replace('_', ' ')
         self.map[new_key] = int(key)
-    else:
-      for key, value in self.class_info.items():
-        self.map[value] = int(key)
 
-    ## TODO: Refactor single label classification caption for dino
+    self.tfidf = None
     self.dino_caption = None
     self.token_spans = None
 
@@ -191,25 +188,33 @@ class YOLODINOBackbone(nn.Module):
         if args.dino_caption:
             logger.warn(f"Class mode is '{self.class_mode}', ignoring provided dino caption '{args.dino_caption}'!")
 
-        d = []
-        for key, val in self.class_info.items():
-            v = val
-            if dataset == "ycbv":
-                v = v[4:].replace('_', ' ')
-            d.append({
-                "id": int(key),
-                "name": v,
-            })
+        if True:
+            d = []
+            for key, val in self.class_info.items():
+                v = val
+                if dataset == "ycbv":
+                    v = v[4:]
 
-        tokens, self.dino_caption = self.build_id2posspan_and_caption(d)
+                v = v.replace('_', ' ')
+                d.append({
+                    "id": int(key),
+                    "name": v,
+                })
 
-        self.token_spans = []
-        for id_spans in tokens.values():
-            self.token_spans.append(id_spans)
+            tokens, self.dino_caption = self.build_id2posspan_and_caption(d)
+
+            self.token_spans = []
+            for id_spans in tokens.values():
+                self.token_spans.append(id_spans)
+        else:
+            self.dino_caption = " . ".join(list(self.map.keys()))
+            self.dino_caption = self.dino_caption.replace("_", " ")
+
+            self.vectorizer = TfidfVectorizer()
+            self.tfidf = self.vectorizer.fit_transform(self.map.keys())
 
 
-        # self.dino_caption = " . ".join(list(self.map.keys()))
-        # self.dino_caption = self.dino_caption.replace("_", " ")
+    logger.info(f"Dino caption: {self.dino_caption}")
 
   def create_positive_map_from_span(self, tokenized, token_span, max_text_len=256):
       """construct a map such that positive_map[i,j] = True iff box i is associated to token j
@@ -274,7 +279,8 @@ class YOLODINOBackbone(nn.Module):
               class_name: str = random.choice(class_name_list)
 
           tokens_positive_i = []
-          subnamelist = [i.strip() for i in class_name.strip().split(" ")]
+          # subnamelist = [i.strip() for i in class_name.strip().split(" ")]
+          subnamelist = [class_name]
           for subname in subnamelist:
               if len(subname) == 0:
                   continue
@@ -347,7 +353,6 @@ class YOLODINOBackbone(nn.Module):
   def dinoPredict(self, images: torch.Tensor, caption_: str, box_threshold: float, text_threshold: float,
                   remove_combined: bool = False) -> Tuple[torch.Tensor, torch.Tensor, List[str]]:
 
-    # TODO: Integrate "phrase" mode of groundingdino! (inference_on_an_image.py)
     # "preprocess_caption()"
     caption = caption_.lower().strip()
     if not caption.endswith("."):
@@ -398,6 +403,7 @@ class YOLODINOBackbone(nn.Module):
               pred_phrases = all_phrases
 
               yield boxes_filt, logits_filt, pred_phrases
+
       else:
           # If token_spans not given, we are in the mode of describing the object's appearance
           mask = prediction_logits.max(dim=1)[0] > box_threshold
@@ -426,7 +432,23 @@ class YOLODINOBackbone(nn.Module):
               in logits
             ]
 
-          yield boxes, logits.max(dim=1)[0], phrases
+          # Match predicted label to all classes via cosine similarity
+          if self.tfidf:
+            phrases_new = []
+            for label in phrases:
+                label_vec = self.vectorizer.transform([label])
+                cos_sim = cosine_similarity(label_vec, self.tfidf).flatten()
+
+                if all(v <= self.args.dino_cos_sim for v in cos_sim):  # If not a single label matches 10% of pred label
+                    continue
+
+                best_match_idx = np.argmax(cos_sim)
+                best_match = list(self.map.keys())[best_match_idx]
+                phrases_new.append(best_match)
+
+            yield boxes, logits.max(dim=1)[0], phrases_new
+          else:
+            yield boxes, logits.max(dim=1)[0], phrases
           # # TODO: Optimize this! The torch operations add latency!
           # logits = logits.max(dim=1)[0]
           # if self.class_mode == "specific":
