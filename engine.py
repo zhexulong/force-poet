@@ -107,7 +107,7 @@ def convert_to_pixel_values(img_width, img_height, bbox):
 
 
 # Function to visualize bounding boxes on a single image
-def visualize_bounding_boxes(image, pred_bboxes, gt_bboxes, pred_classes, gt_classes):
+def visualize_bounding_boxes(image, pred_bboxes, gt_bboxes, pred_classes, gt_classes, show_gt = False):
   img_height, img_width = image.shape[:2]
 
   # Draw predicted bounding boxes in red
@@ -117,12 +117,13 @@ def visualize_bounding_boxes(image, pred_bboxes, gt_bboxes, pred_classes, gt_cla
     text_position = (x_min, y_min + height + 15)  # Positioned below the bbox
     image = cv2.putText(image, f'pred: {pred_classes[idx]}', text_position, cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1, cv2.LINE_AA)
 
-  # Draw ground truth bounding boxes in green
-  for idx, bbox in enumerate(gt_bboxes):
-    x_min, y_min, width, height = convert_to_pixel_values(img_width, img_height, bbox)
-    image = cv2.rectangle(image, (x_min, y_min), (x_min + width, y_min + height), (255, 0, 0), 1)
-    text_position = (x_min, y_min - 10)  # Positioned above the bbox
-    image = cv2.putText(image, f'gt: {gt_classes[idx]}', text_position, cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 1, cv2.LINE_AA)
+  if show_gt:
+      # Draw ground truth bounding boxes in green
+      for idx, bbox in enumerate(gt_bboxes):
+        x_min, y_min, width, height = convert_to_pixel_values(img_width, img_height, bbox)
+        image = cv2.rectangle(image, (x_min, y_min), (x_min + width, y_min + height), (255, 0, 0), 1)
+        text_position = (x_min, y_min - 10)  # Positioned above the bbox
+        image = cv2.putText(image, f'gt: {gt_classes[idx]}', text_position, cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 1, cv2.LINE_AA)
 
   return image
 
@@ -137,11 +138,13 @@ def pose_evaluate(model, matcher, pose_evaluator, data_loader, image_set, bbox_m
     # Reset pose evaluator to be empty
     pose_evaluator.reset()
 
+    type_str: str = "test" if pose_evaluator.testing else "eval"
+
     # Check whether the evaluation folder exists, otherwise create it
     if epoch is not None:
-        output_eval_dir = os.path.join(output_dir, "eval_" + image_set + "_" + bbox_mode + "_" + str(epoch))
+        output_eval_dir = os.path.join(output_dir, type_str + "_" + image_set + "_" + bbox_mode + "_" + str(epoch))
     else:
-        output_eval_dir = os.path.join(output_dir, "eval_" + image_set + "_" + bbox_mode)
+        output_eval_dir = os.path.join(output_dir, type_str + "_" + image_set + "_" + bbox_mode)
     Path(output_eval_dir).mkdir(parents=True, exist_ok=True)
 
     output_eval_dir += "/"
@@ -160,12 +163,13 @@ def pose_evaluate(model, matcher, pose_evaluator, data_loader, image_set, bbox_m
         if outputs == None:
             continue
 
-        # Visualize and save bounding boxes
+        # # Visualize and save bounding boxes
         # for i in range(samples.tensors.shape[0]):
         #   image_tensor = samples.tensors[i]
-        #   image_np = image_tensor.permute(1, 2, 0).cpu().numpy()  # Convert from CxHxW to HxWxC format
+        #   image_np = image_tensor.permute(1,2,0).contiguous().cpu().numpy()  # Convert from CxHxW to HxWxC format
         #   image_np = np.clip(image_np * 255, 0, 255).astype(np.uint8)
-        #   image_cv = cv2.cvtColor(image_np, cv2.COLOR_RGB2BGR)
+        #
+        #   # image_cv = cv2.cvtColor(image_np, cv2.COLOR_RGB2BGR)
         #
         #   pred_bboxes = outputs["pred_boxes"][i]  # Get predicted bounding boxes for this image
         #   gt_bboxes = targets[i]["boxes"]  # Get ground truth bounding boxes for this image
@@ -174,7 +178,7 @@ def pose_evaluate(model, matcher, pose_evaluator, data_loader, image_set, bbox_m
         #   gt_classes = targets[i]["labels"]
         #
         #   # Visualize bounding boxes
-        #   image_with_boxes = visualize_bounding_boxes(image_cv, pred_bboxes, gt_bboxes, pred_classes, gt_classes)
+        #   image_with_boxes = visualize_bounding_boxes(image_np, pred_bboxes, gt_bboxes, pred_classes, gt_classes)
         #
         #   # Display the image
         #   plt.figure(figsize=(6, 6))
@@ -185,12 +189,39 @@ def pose_evaluate(model, matcher, pose_evaluator, data_loader, image_set, bbox_m
         #   if not os.path.exists(os.path.join(output_eval_dir, "bbox/")):
         #     os.makedirs(os.path.join(output_eval_dir, "bbox/"))
         #   plt.savefig(os.path.join(output_eval_dir, "bbox/", f"{targets[i]['image_id'].item()}.png"), bbox_inches="tight")
+        #   plt.close()
 
         outputs_without_aux = {k: v for k, v in outputs.items() if k != 'aux_outputs' and k != 'enc_outputs'}
 
         # Extract final predictions and store them
         indices = matcher(outputs_without_aux, targets, n_boxes_per_sample)
         idx = get_src_permutation_idx(indices)
+
+        # # ------------------- Visualize MATCHED Bounding Boxes -------------------
+        # for i in range(samples.tensors.shape[0]):
+        #   image_tensor = samples.tensors[i]
+        #   image_np = image_tensor.permute(1,2,0).contiguous().cpu().numpy()  # Convert from CxHxW to HxWxC format
+        #   image_np = np.clip(image_np * 255, 0, 255).astype(np.uint8)
+        #
+        #   matched_pred_bboxes = outputs_without_aux["pred_boxes"][i][indices[i][0]]  # Get MATCHED predicted bounding boxes for this image using indices
+        #   gt_bboxes = targets[i]["boxes"][indices[i][1]] if len(indices[i][1]) > 0 else torch.empty(0, 4) # Get MATCHED ground truth bounding boxes for this image using indices, handle empty GT boxes
+        #
+        #   matched_pred_classes = outputs_without_aux["pred_classes"][i][indices[i][0]] # Get MATCHED predicted classes for this image using indices
+        #   gt_classes = targets[i]["labels"][indices[i][1]] if len(indices[i][1]) > 0 else torch.empty(0, dtype=torch.int64) # Get MATCHED ground truth classes for this image using indices, handle empty GT classes
+        #
+        #
+        #   # Visualize MATCHED bounding boxes
+        #   image_with_matched_boxes = visualize_bounding_boxes(image_np, matched_pred_bboxes, gt_bboxes, matched_pred_classes, gt_classes, True) # Visualize matched bounding boxes
+        #
+        #   # Save the image with MATCHED bounding boxes
+        #   plt.figure(figsize=(6, 6))
+        #   plt.imshow(image_with_matched_boxes)
+        #   plt.axis('off')
+        #
+        #   if not os.path.exists(os.path.join(output_eval_dir, "bbox/")): # Create directory for matched bbox visualizations
+        #     os.makedirs(os.path.join(output_eval_dir, "bbox/"))
+        #   plt.savefig(os.path.join(output_eval_dir, "bbox/", f"{targets[i]['image_id'].item()}_1.png"), bbox_inches="tight") # Save matched bbox visualization
+        #   plt.close() # Close the figure to free memory
 
         pred_translations = outputs_without_aux["pred_translation"][idx].detach().cpu().numpy()
         pred_rotations = outputs_without_aux["pred_rotation"][idx].detach().cpu().numpy()
