@@ -166,7 +166,8 @@ class InferenceEngine:
             logger.warn("No prediction ...")
             return None, None, None, None, None
 
-        # TODO: Check if n_boxes_per_sample[0] is non-zero if nothing predicted
+        # TODO: Check if an empty object {} will be added to the results in case of no prediction! (-> consistency with how PoET does inf.)
+        # TODO: Check if n_boxes_per_sample[0] is non-zero if nothing was predicted!
         # Iterate over all the detected predictions
         result: dict = {}
         for d in range(n_boxes_per_sample[0]):
@@ -199,8 +200,10 @@ class InferenceEngine:
                 "img": img,
             }
 
-        self.results[frame_str] = result
         if not result: return None, time.time() - start_, poet_time, None, None
+
+        frame_str = str(f"frame{frame_number}")
+        self.results[frame_str] = result
 
         t = mean_translation(result)
         R = mean_rotation(result)
