@@ -67,34 +67,65 @@ def store_img(img: np.ndarray, frame: int):
     cv2.imwrite(os.path.join(path, name), cv2.cvtColor(img, cv2.COLOR_RGB2BGR))
 
 
+last_pose_lock = threading.Lock()
 last_pose: Pose = None
+last_pose_time = None # Seconds
 def pose_thread(pose: PoseStamped):
-    global last_pose
+    global last_pose, last_pose_lock, last_pose_time
 
-    pose.header.frame_id = "world"
-    t = np.array([pose.pose.position.x, pose.pose.position.y, pose.pose.position.z])
-    R = Rotation.from_quat([pose.pose.orientation.x, pose.pose.orientation.y, pose.pose.orientation.z,
-                            pose.pose.orientation.w]).as_matrix()
+    # If lock already acquired, discard current pose
+    if not last_pose_lock.acquire(blocking=False):
+        return
 
-    last_pose = Pose(t, R, pose.header.seq, pose.header.stamp)
+    try:
+        if pose.header.seq < last_pose.header.seq: # Sanity check -> skip pose if older than last one
+            last_pose_lock.release()
+            return
+
+        pose.header.frame_id = "world"
+        t = np.array([pose.pose.position.x, pose.pose.position.y, pose.pose.position.z])
+        R = Rotation.from_quat([pose.pose.orientation.x, pose.pose.orientation.y, pose.pose.orientation.z,
+                                pose.pose.orientation.w]).as_matrix()
+
+        last_pose = Pose(t, R, pose.header.seq, pose.header.stamp)
+        last_pose_time = pose.header.stamp.secs + pose.header.stamp.nsecs * 1e-9
+    finally:
+        last_pose_lock.release()
 
 
-frame_glob: Image = None
-def image_thread(container):
-    global frame_glob, frame_number
+last_frame_lock = threading.Lock()
+last_frame: Image = None
+last_frame_time = None # Seconds
+def image_thread(container: av.container.InputContainer):
+    global last_frame ,last_frame_lock, last_frame_time
 
-    # skip first 300 frames in order to avoid delay
-    frame_skip = 300
-    frame: av.video.frame.VideoFrame
-    for frame in container.decode(video=0):
-        # if 0 < frame_skip:
-        #     frame_skip = frame_skip - 1
-        #     continue
+    try:
+        # skip first 300 frames in order to avoid delay
+        # frame_skip = 300
 
-        # tmp = np.array(frame.to_image())  # Convert frame to numpy array
-        # frame_glob = cv2.resize(tmp, (IMG_WIDTH, IMG_HEIGHT))  # Resize image appropriately for inference
-        # frame_glob = Image.fromarray(frame_glob).convert("RGB")
-        frame_glob = frame.to_image(width=IMG_WIDTH, height=IMG_HEIGHT)
+        frame: av.video.frame.VideoFrame
+        for frame in container.decode(video=0):
+            # if 0 < frame_skip:
+            #     frame_skip = frame_skip - 1
+            #     continue
+
+            # If lock already acquired, discard current image
+            if not last_frame_lock.acquire(blocking=False):
+                continue
+
+            if frame.time < last_frame_time: # Sanity check -> skip frame if older than last one
+                last_frame_lock.release()
+                continue
+
+            # tmp = np.array(frame.to_image())  # Convert frame to numpy array
+            # last_frame = cv2.resize(tmp, (IMG_WIDTH, IMG_HEIGHT))  # Resize image appropriately for inference
+            # last_frame = Image.fromarray(last_frame).convert("RGB")
+            last_frame = frame.to_image(width=IMG_WIDTH, height=IMG_HEIGHT)
+            ## TODO: Use frame.to_ndarray() instead of frame.to_image()!!
+            # Get the timestamp of the frame
+            last_frame_time = frame.time
+    finally:
+        last_frame_lock.release()
 
         if STOP_THREADS == True:
             return
@@ -103,7 +134,7 @@ def image_thread(container):
 frame_number: int = 0
 pose_pub = None
 def inference_thread(image_display: pygame.Surface):
-    global frame_glob
+    global last_frame
     global frame_number
     global engine
     global last_pose
@@ -113,38 +144,39 @@ def inference_thread(image_display: pygame.Surface):
     while True:
         # Immediately get last recorded ground-truth pose and image of drone
         gt: Pose
-        if last_pose is not None:
-            gt = copy.deepcopy(last_pose)  # Ensure to get a deep-copy of the last pose, so that it won't be changed
-            # if last_pose and last_pose.id >= gt.id: # Only accept poses that are younger than previous
-            #     continue
-        else:
-            if STOP_THREADS == True:
-                return
-            # logger.warn(f"[{frame_number:04d}] Got no pose, skipping inference on drone image ...")
-            continue  # If no pose recorded, skip
+        with last_pose_lock:
+            if last_pose is not None:
+                gt = copy.deepcopy(last_pose)  # Ensure to get a deep-copy of the last pose, so that we don't hold a reference
+                # if last_pose and last_pose.id >= gt.id: # Only accept poses that are younger than previous
+                #     continue
+            else:
+                # logger.warn(f"[{frame_number:04d}] Got no pose, skipping inference on drone image ...")
+                continue  # If no pose recorded, skip
 
         frame: Image
-        if frame_glob is not None:
-            frame = copy.deepcopy(frame_glob)
-        else:
-            if STOP_THREADS == True:
-                return
-            # logger.warn(f"[{frame_number:04d}] Got no frame, skipping inference on drone image ...")
-            continue
+        with last_frame_lock:
+            if last_frame is not None:
+                frame = copy.deepcopy(last_frame)
+            else:
+                # logger.warn(f"[{frame_number:04d}] Got no frame, skipping inference on drone image ...")
+                continue
+
+        if STOP_THREADS == True:
+            return
 
         start_time = time.time()
-        frame_number += 1
 
-        # Store drone image and ground-truth data
+        # Store recorded image and ground-truth data
         store_img(np.array(frame), frame_number)
         store_pose(gt, frame_number)
 
         # Do inference ...
-        res: dict = None
+        res: dict = {}
         try:
-            res, inf_time, poet_time, t_rmse, R_rmse = engine.inference(frame_glob, gt, frame_number)
+            res, inf_time, poet_time, t_rmse, R_rmse = engine.inference(frame, gt, frame_number)
         except Exception as error:
             logger.warn(error.with_traceback())
+            frame_number += 1
             continue
 
         # Display annotated image
@@ -155,10 +187,9 @@ def inference_thread(image_display: pygame.Surface):
             # name = f"frame{frame_number}_1.png"
             # cv2.imwrite(os.path.join(path, name), cv2.cvtColor(res[0]["img"], cv2.COLOR_RGB2BGR))
         else:
-            if STOP_THREADS == True:
-                return
-            display_img(np.array(frame_glob), image_display)
+            display_img(np.array(last_frame), image_display)
             logger.warn(f"[{frame_number:04d}] Got no prediction for frame ...")
+            frame_number += 1
             continue
 
         # Publish prediction as ros message
@@ -185,6 +216,8 @@ def inference_thread(image_display: pygame.Surface):
         txt = f"[{frame_number:04d}] Total: {time.time() - start_time:.4f}s | PoEt: {poet_time:>.4f}s | x: {gt.t.x:.4f} | y: {gt.t.y:.4f} | z : {gt.t.z:.4f} | RMSE (t): {t_rmse:.4f}, (R): {R_rmse:.4f}"
         logger.succ(txt)
         log_file.write(txt + "\n")
+
+        frame_number += 1
 
         if STOP_THREADS == True:
             return 
@@ -301,7 +334,7 @@ if __name__ == "__main__":
         drone.wait_for_connection(60.0)
 
         retry = 3
-        container = None
+        container: av.container.InputContainer = None
 
         # get video stream from drone
         while container is None and 0 < retry:
@@ -318,7 +351,7 @@ if __name__ == "__main__":
         img_thread.start()
         logger.succ("Image thread started!")
 
-        while frame_glob is None:
+        while last_frame is None:
             time.sleep(0.5)
 
         inf_thread = threading.Thread(target=inference_thread, args=(image_display,))
