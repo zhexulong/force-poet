@@ -178,7 +178,7 @@ class InferenceEngine:
 
             #########################
             # TODO: Refactor object!!
-            R, t = self.transform_to_cam(pred_rot, pred_t, "cabinet")
+            R, t = self.transform_to_cam(pred_rot, pred_t, "doll")
 
             img = None
             if self.draw:

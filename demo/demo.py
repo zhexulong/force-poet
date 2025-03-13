@@ -46,7 +46,7 @@ def display_img(frame: numpy.array, display: pygame.Surface):
     display.blit(scaled_image, (0, 0))
 
 
-base_path: str = "demo/fly/"
+base_path: str = "demo/13_03"
 def store_pose(pose: Pose, frame: int):
     name = "frame" + str(frame) + ".png"
 
@@ -78,9 +78,9 @@ def pose_thread(pose: PoseStamped):
         return
 
     try:
-        if pose.header.seq < last_pose.header.seq: # Sanity check -> skip pose if older than last one
-            last_pose_lock.release()
-            return
+        # if not pose or pose.header.seq < last_pose.header.seq: # Sanity check -> skip pose if older than last one
+        #     last_pose_lock.release()
+        #     return
 
         pose.header.frame_id = "world"
         t = np.array([pose.pose.position.x, pose.pose.position.y, pose.pose.position.z])
@@ -95,7 +95,7 @@ def pose_thread(pose: PoseStamped):
 
 last_frame_lock = threading.Lock()
 last_frame: Image = None
-last_frame_time = None # Seconds
+last_frame_time = 0 # Seconds
 def image_thread(container: av.container.InputContainer):
     global last_frame ,last_frame_lock, last_frame_time
 
@@ -105,6 +105,9 @@ def image_thread(container: av.container.InputContainer):
 
         frame: av.video.frame.VideoFrame
         for frame in container.decode(video=0):
+            if STOP_THREADS == True:
+                return
+    
             # if 0 < frame_skip:
             #     frame_skip = frame_skip - 1
             #     continue
@@ -113,9 +116,9 @@ def image_thread(container: av.container.InputContainer):
             if not last_frame_lock.acquire(blocking=False):
                 continue
 
-            if frame.time < last_frame_time: # Sanity check -> skip frame if older than last one
-                last_frame_lock.release()
-                continue
+            # if frame.time < last_frame_time: # Sanity check -> skip frame if older than last one
+            #     last_frame_lock.release()
+            #     continue
 
             # tmp = np.array(frame.to_image())  # Convert frame to numpy array
             # last_frame = cv2.resize(tmp, (IMG_WIDTH, IMG_HEIGHT))  # Resize image appropriately for inference
@@ -124,11 +127,10 @@ def image_thread(container: av.container.InputContainer):
             ## TODO: Use frame.to_ndarray() instead of frame.to_image()!!
             # Get the timestamp of the frame
             last_frame_time = frame.time
-    finally:
-        last_frame_lock.release()
+            last_frame_lock.release()
+    except e:
+        logger.err(str(e))
 
-        if STOP_THREADS == True:
-            return
 
 
 frame_number: int = 0
@@ -142,6 +144,10 @@ def inference_thread(image_display: pygame.Surface):
     global pose_pub
 
     while True:
+
+        if STOP_THREADS == True:
+            return
+
         # Immediately get last recorded ground-truth pose and image of drone
         gt: Pose
         with last_pose_lock:
@@ -150,6 +156,8 @@ def inference_thread(image_display: pygame.Surface):
                 # if last_pose and last_pose.id >= gt.id: # Only accept poses that are younger than previous
                 #     continue
             else:
+                if STOP_THREADS == True:
+                    return
                 # logger.warn(f"[{frame_number:04d}] Got no pose, skipping inference on drone image ...")
                 continue  # If no pose recorded, skip
 
@@ -158,7 +166,9 @@ def inference_thread(image_display: pygame.Surface):
             if last_frame is not None:
                 frame = copy.deepcopy(last_frame)
             else:
-                # logger.warn(f"[{frame_number:04d}] Got no frame, skipping inference on drone image ...")
+                if STOP_THREADS == True:
+                    return
+                logger.warn(f"[{frame_number:04d}] Got no frame, skipping inference on drone image ...")
                 continue
 
         if STOP_THREADS == True:
@@ -187,7 +197,7 @@ def inference_thread(image_display: pygame.Surface):
             # name = f"frame{frame_number}_1.png"
             # cv2.imwrite(os.path.join(path, name), cv2.cvtColor(res[0]["img"], cv2.COLOR_RGB2BGR))
         else:
-            display_img(np.array(last_frame), image_display)
+            display_img(np.array(frame), image_display)
             logger.warn(f"[{frame_number:04d}] Got no prediction for frame ...")
             frame_number += 1
             continue
@@ -289,7 +299,7 @@ if __name__ == "__main__":
     args.device = "cuda"
 
     #args.dino_caption = "black cabinet."
-    args.dino_caption = "human with blue t-shirt."
+    args.dino_caption = "human doll."
     args.dino_args = "models/groundingdino/config/GroundingDINO_SwinT_OGC.py"
     args.dino_checkpoint = "models/groundingdino/weights/groundingdino_swint_ogc.pth"
     args.dino_box_threshold = 0.35
