@@ -447,6 +447,10 @@ def main(args):
         return
 
     if args.test:
+        if args.resume:
+            eval_epoch = checkpoint['epoch']
+        else:
+            eval_epoch = None
         pose_evaluator.training = False
         pose_evaluator.testing = False
         avg_trans_err, avg_rot_err, test_total_time_str = test(pose_evaluator, model, matcher, args, device, output_dir, eval_epoch)
