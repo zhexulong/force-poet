@@ -33,6 +33,7 @@ from evaluation_tools.pose_evaluator_init import build_pose_evaluator
 from inference_tools.inference_engine import inference
 from tabulate import tabulate
 
+import util.logger
 from util.logger import warn, err
 from CorrectedSummaryWriter import CorrectedSummaryWriter
 
@@ -214,7 +215,7 @@ def test(pose_evaluator, model, matcher, args, device, output_dir: Path, epoch: 
 
         avg_trans_err, avg_rot_err = pose_evaluate(model, matcher, pose_evaluator, data_loader_test, args.test_set,
                                                    args.bbox_mode,
-                                                   args.rotation_representation, device, str(output_dir), epoch)
+                                                   args.rotation_representation, device, str(output_dir), args, epoch)
 
         test_total_time = time.time() - test_start_time
         test_total_time_str = str(datetime.timedelta(seconds=int(test_total_time)))
@@ -380,9 +381,6 @@ def main(args):
     if not os.path.exists(output_dir):
       os.makedirs(output_dir)
 
-    with open(Path(output_dir, "args.txt"), "w") as f:
-      f.write(tabulate(data, headers=headers, tablefmt="rounded_outline"))
-
     # Load checkpoint
     if args.resume:
         if args.resume.startswith('https'):
@@ -434,7 +432,7 @@ def main(args):
         pose_evaluator.training = False
         pose_evaluator.testing = False
         pose_evaluate(model, matcher, pose_evaluator, data_loader_val, args.eval_set, args.bbox_mode,
-                      args.rotation_representation, device, args.output_dir, eval_epoch)
+                      args.rotation_representation, device, args.output_dir, args, eval_epoch)
         return
 
     # Evaluate the model for the BOP challenge
@@ -443,7 +441,7 @@ def main(args):
         pose_evaluator.training = False
         pose_evaluator.testing = False
         bop_evaluate(model, matcher, data_loader_val, args.eval_set, args.bbox_mode,
-                     args.rotation_representation, device, args.output_dir)
+                     args.rotation_representation, device, args, args.output_dir)
         return
 
     if args.test:
@@ -457,10 +455,13 @@ def main(args):
         return
 
     print("Start training")
+    util.logger.saveArgs(output_dir, args)
+
     start_time = time.time()
     writer = CorrectedSummaryWriter(os.path.join(output_dir))
     pose_evaluator.writer = writer
     pose_evaluator.training = True
+    pose_evaluator.testing = False
 
     epoch = 0
     try:
@@ -509,7 +510,7 @@ def main(args):
             # Do evaluation on the validation set every n epochs
             if epoch % args.eval_interval == 0:
                 avg_trans_err, avg_rot_err = pose_evaluate(model, matcher, pose_evaluator, data_loader_val, args.eval_set, args.bbox_mode,
-                              args.rotation_representation, device, str(output_dir), epoch)
+                              args.rotation_representation, device, str(output_dir), None, epoch)
 
                 # Save model if best translation and rotation result
                 if args.output_dir:
@@ -549,6 +550,7 @@ def main(args):
         traceback.print_exc()
         err("Exiting program ...")
 
+    pose_evaluator.training = True
     pose_evaluator.testing = True
     avg_trans_err, avg_rot_err, test_total_time_str = test(pose_evaluator, model, matcher, args, device, output_dir, epoch)
 

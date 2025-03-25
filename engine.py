@@ -23,10 +23,14 @@ from pathlib import Path
 from typing import Iterable
 
 import cv2
+import numpy
 import numpy as np
 import torch
 from matplotlib import pyplot as plt
+from sympy.strategies.core import switch
+from tabulate import tabulate
 
+import util.logger
 import util.misc as utils
 from util.quaternion_ops import quat2rot
 from data_utils.data_prefetcher import data_prefetcher
@@ -128,7 +132,7 @@ def visualize_bounding_boxes(image, pred_bboxes, gt_bboxes, pred_classes, gt_cla
   return image
 
 @torch.no_grad()
-def pose_evaluate(model, matcher, pose_evaluator, data_loader, image_set, bbox_mode, rotation_mode, device, output_dir, epoch=None):
+def pose_evaluate(model, matcher, pose_evaluator, data_loader, image_set, bbox_mode, rotation_mode, device, output_dir, args, epoch=None):
     """
     Evaluate PoET on the whole dataset, calculate the evaluation metrics and store the final performance.
     """
@@ -148,7 +152,18 @@ def pose_evaluate(model, matcher, pose_evaluator, data_loader, image_set, bbox_m
     Path(output_eval_dir).mkdir(parents=True, exist_ok=True)
 
     output_eval_dir += "/"
-    print("Process validation dataset:")
+
+    if args:
+        util.logger.saveArgs(output_eval_dir, args)
+
+    pd = {int(i):0 for i,_ in pose_evaluator.classes_map.items()}
+    gt = {int(i):0 for i,_ in pose_evaluator.classes_map.items()}
+
+    if pose_evaluator.testing:
+        print("Process test dataset:")
+    else:
+        print("Process validation dataset:")
+
     n_images = len(data_loader.dataset.ids)
     bs = data_loader.batch_size
     start_time = time.time()
