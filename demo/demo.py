@@ -46,7 +46,7 @@ def display_img(frame: numpy.array, display: pygame.Surface):
     display.blit(scaled_image, (0, 0))
 
 
-base_path: str = "demo/13_03"
+base_path: str = "demo/26_03"
 def store_pose(pose: Pose, frame: int):
     name = "frame" + str(frame) + ".png"
 
@@ -74,23 +74,23 @@ def pose_thread(pose: PoseStamped):
     global last_pose, last_pose_lock, last_pose_time
 
     # If lock already acquired, discard current pose
-    if not last_pose_lock.acquire(blocking=False):
-        return
+    # if not last_pose_lock.acquire(blocking=False):
+    #     return
 
-    try:
+    # try:
         # if not pose or pose.header.seq < last_pose.header.seq: # Sanity check -> skip pose if older than last one
         #     last_pose_lock.release()
         #     return
 
-        pose.header.frame_id = "world"
-        t = np.array([pose.pose.position.x, pose.pose.position.y, pose.pose.position.z])
-        R = Rotation.from_quat([pose.pose.orientation.x, pose.pose.orientation.y, pose.pose.orientation.z,
-                                pose.pose.orientation.w]).as_matrix()
+    pose.header.frame_id = "world"
+    t = np.array([pose.pose.position.x, pose.pose.position.y, pose.pose.position.z])
+    R = Rotation.from_quat([pose.pose.orientation.x, pose.pose.orientation.y, pose.pose.orientation.z,
+                            pose.pose.orientation.w]).as_matrix()
 
-        last_pose = Pose(t, R, pose.header.seq, pose.header.stamp)
-        last_pose_time = pose.header.stamp.secs + pose.header.stamp.nsecs * 1e-9
-    finally:
-        last_pose_lock.release()
+    last_pose = Pose(t, R, pose.header.seq, pose.header.stamp)
+    last_pose_time = pose.header.stamp.secs + pose.header.stamp.nsecs * 1e-9
+    # finally:
+        # last_pose_lock.release()
 
 
 last_frame_lock = threading.Lock()
@@ -113,8 +113,8 @@ def image_thread(container: av.container.InputContainer):
             #     continue
 
             # If lock already acquired, discard current image
-            if not last_frame_lock.acquire(blocking=False):
-                continue
+            # if not last_frame_lock.acquire(blocking=False):
+            #     continue
 
             # if frame.time < last_frame_time: # Sanity check -> skip frame if older than last one
             #     last_frame_lock.release()
@@ -127,7 +127,7 @@ def image_thread(container: av.container.InputContainer):
             ## TODO: Use frame.to_ndarray() instead of frame.to_image()!!
             # Get the timestamp of the frame
             last_frame_time = frame.time
-            last_frame_lock.release()
+            # last_frame_lock.release()
     except e:
         logger.err(str(e))
 
@@ -150,26 +150,26 @@ def inference_thread(image_display: pygame.Surface):
 
         # Immediately get last recorded ground-truth pose and image of drone
         gt: Pose
-        with last_pose_lock:
-            if last_pose is not None:
-                gt = copy.deepcopy(last_pose)  # Ensure to get a deep-copy of the last pose, so that we don't hold a reference
-                # if last_pose and last_pose.id >= gt.id: # Only accept poses that are younger than previous
-                #     continue
-            else:
-                if STOP_THREADS == True:
-                    return
-                # logger.warn(f"[{frame_number:04d}] Got no pose, skipping inference on drone image ...")
-                continue  # If no pose recorded, skip
+        # with last_pose_lock:
+        if last_pose is not None:
+            gt = copy.deepcopy(last_pose)  # Ensure to get a deep-copy of the last pose, so that we don't hold a reference
+            # if last_pose and last_pose.id >= gt.id: # Only accept poses that are younger than previous
+            #     continue
+        else:
+            if STOP_THREADS == True:
+                return
+            # logger.warn(f"[{frame_number:04d}] Got no pose, skipping inference on drone image ...")
+            continue  # If no pose recorded, skip
 
         frame: Image
-        with last_frame_lock:
-            if last_frame is not None:
-                frame = copy.deepcopy(last_frame)
-            else:
-                if STOP_THREADS == True:
-                    return
-                logger.warn(f"[{frame_number:04d}] Got no frame, skipping inference on drone image ...")
-                continue
+        # with last_frame_lock:
+        if last_frame is not None:
+            frame = copy.deepcopy(last_frame)
+        else:
+            if STOP_THREADS == True:
+                return
+            logger.warn(f"[{frame_number:04d}] Got no frame, skipping inference on drone image ...")
+            continue
 
         if STOP_THREADS == True:
             return
@@ -293,9 +293,9 @@ if __name__ == "__main__":
     # args.lr = 0.000035
     # args.lr_drop = 50
     # args.gamma = 0.1
-    args.resume = "/home/wngicg/repos/poet/results/finetune/drone_data/2024-11-27_09_19_53/checkpoint.pth"
+    # args.resume = "/home/wngicg/repos/poet/results/finetune/drone_data/2024-11-27_09_19_53/checkpoint.pth"
     #args.resume = "/home/wngicg/Desktop/repos/poet/results/train/2024-10-06_12_31_12/checkpoint.pth"
-    #args.resume = "/media/wngicg/USB-DATA/repos/poet/results_doll/train/2024-10-13_14_09_21/checkpoint.pth"
+    args.resume = "/media/wngicg/ESD-USB/checkpoint.pth"
     args.device = "cuda"
 
     #args.dino_caption = "black cabinet."
