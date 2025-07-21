@@ -1,0 +1,70 @@
+# Isaac Sim Dataset Configuration for PoET
+# Configuration file for training PoET on Isaac Sim dataset
+
+# Dataset paths
+dataset_path: '/data/gplong/force_map_project/w-poet/poet/dataset_files/isaac_sim_annotations'
+synt_background: null  # No synthetic background needed for Isaac Sim data
+
+# Model configuration
+num_classes: 22  # 21 object classes + 1 background
+num_queries: 100
+aux_loss: true
+
+# Training parameters
+lr: 1e-4
+lr_backbone: 1e-5
+batch_size: 2
+weight_decay: 1e-4
+epochs: 300
+lr_drop: 200
+clip_max_norm: 0.1
+
+# Data augmentation
+rgb_augmentation: true
+grayscale: false
+
+# Bounding box settings
+bbox_mode: 'gt'  # Use ground truth bounding boxes
+jitter_probability: 0.5
+
+# Model architecture
+backbone: 'resnet50'
+position_embedding: 'sine'
+hidden_dim: 256
+nheads: 8
+enc_layers: 6
+dec_layers: 6
+dim_feedforward: 2048
+dropout: 0.1
+
+# Loss weights
+mask_loss_coef: 1
+dice_loss_coef: 1
+bbox_loss_coef: 5
+giou_loss_coef: 2
+eos_coef: 0.1
+pose_loss_coef: 1
+
+# Evaluation
+eval_every: 10
+save_every: 50
+
+# Device settings
+device: 'cuda'
+num_workers: 4
+cache_mode: false
+
+# Output directory
+output_dir: './results/isaac_sim_training'
+
+# Resume training (optional)
+# resume: './path/to/checkpoint.pth'
+
+# Pretrained model (optional)
+# pretrained: './path/to/pretrained_model.pth'
+
+# Class names file
+classes_file: '/data/gplong/force_map_project/w-poet/poet/dataset_files/isaac_sim_annotations/classes.json'
+
+# Symmetries file
+symmetries_file: '/data/gplong/force_map_project/w-poet/poet/dataset_files/isaac_sim_symmetries.json'

@@ -51,7 +51,7 @@ def create_modules(module_defs, img_size, cfg):
             elif mdef['activation'] == 'swish':
                 modules.add_module('activation', Swish())
             elif mdef['activation'] == 'mish':
-                modules.add_module('activation', Mish())
+                modules.add_module('activation', Swish())
 
         elif mdef['type'] == 'deformableconvolutional':
             bn = mdef['batch_normalize']
@@ -83,7 +83,7 @@ def create_modules(module_defs, img_size, cfg):
             elif mdef['activation'] == 'swish':
                 modules.add_module('activation', Swish())
             elif mdef['activation'] == 'mish':
-                modules.add_module('activation', Mish())
+                modules.add_module('activation', Swish())
 
         elif mdef['type'] == 'BatchNorm2d':
             filters = output_filters[-1]
