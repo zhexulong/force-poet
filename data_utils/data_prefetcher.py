@@ -73,6 +73,7 @@ class data_prefetcher():
                 samples, targets = next(self.loader)
                 samples, targets = to_cuda(samples, targets, self.device)
             except StopIteration:
+                print("Data loader exhausted, no more samples available.")
                 samples = None
                 targets = None
         return samples, targets

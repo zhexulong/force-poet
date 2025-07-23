@@ -27,7 +27,7 @@ from torch.utils.data import DataLoader
 import util.misc as utils
 import data_utils.samplers as samplers
 from data_utils import build_dataset
-from engine import train_one_epoch, pose_evaluate, bop_evaluate
+from engine import train_one_epoch, train_one_epoch_with_iter_eval, pose_evaluate, bop_evaluate
 from models import build_model
 from evaluation_tools.pose_evaluator_init import build_pose_evaluator
 from inference_tools.inference_engine import inference
@@ -111,7 +111,7 @@ def get_args_parser():
                         help="Dropout applied in the transformer")
     parser.add_argument('--nheads', default=8, type=int,
                         help="Number of attention heads inside the transformer's attentions")
-    parser.add_argument('--num_queries', default=10, type=int,
+    parser.add_argument('--num_queries', default=20, type=int,
                         help="Number of query slots")
     parser.add_argument('--dec_n_points', default=4, type=int)
     parser.add_argument('--enc_n_points', default=4, type=int)
@@ -152,8 +152,10 @@ def get_args_parser():
     parser.add_argument('--grayscale', action='store_true', help='Activate grayscale augmentation.')
 
     # * Evaluator
-    parser.add_argument('--eval_interval', type=int, default=10,
-                        help="Epoch interval after which the current model is evaluated")
+    parser.add_argument('--eval_interval', type=int, default=500,
+                        help="Iteration interval after which the current model is evaluated")
+    parser.add_argument('--eval_by_epoch', action='store_true',
+                        help="Use epoch-based evaluation instead of iteration-based evaluation")
     parser.add_argument('--class_info', type=str, default='/annotations/classes.json',
                         help='path to .txt-file containing the class names')
     parser.add_argument('--models', type=str, default='/models_eval/',
@@ -464,55 +466,87 @@ def main(args):
     pose_evaluator.testing = False
 
     epoch = 0
+    global_iteration = 0
     try:
         best_loss = sys.float_info.max
-        for epoch in range(args.start_epoch, args.epochs):
-            if args.distributed:
-                sampler_train.set_epoch(epoch)
+        
+        if args.eval_by_epoch:
+            # Original epoch-based evaluation
+            for epoch in range(args.start_epoch, args.epochs):
+                if args.distributed:
+                    sampler_train.set_epoch(epoch)
 
-            start = time.time()
-            train_stats = train_one_epoch(
-                model, criterion, data_loader_train, optimizer, device, epoch, args.clip_max_norm)
-            stop = time.time()
+                start = time.time()
+                train_stats = train_one_epoch(
+                    model, criterion, data_loader_train, optimizer, device, epoch, args.clip_max_norm)
+                stop = time.time()
 
-            lr_scheduler.step()
-            if args.output_dir:
-                checkpoint_paths = [output_dir / 'checkpoint_latest.pth']
-                # extra checkpoint before LR drop and every save_interval epochs
-                if (epoch + 1) % args.lr_drop == 0 or (epoch + 1) % args.save_interval == 0:
-                    checkpoint_paths.append(output_dir / f'checkpoint{epoch:04}.pth')
+                lr_scheduler.step()
+                if args.output_dir:
+                    checkpoint_paths = [output_dir / 'checkpoint_latest.pth']
+                    # extra checkpoint before LR drop and every save_interval epochs
+                    if (epoch + 1) % args.lr_drop == 0 or (epoch + 1) % args.save_interval == 0:
+                        checkpoint_paths.append(output_dir / f'checkpoint{epoch:04}.pth')
 
-                for checkpoint_path in checkpoint_paths:
-                    utils.save_on_master({
-                        'model': model_without_ddp.state_dict(),
-                        'optimizer': optimizer.state_dict(),
-                        'lr_scheduler': lr_scheduler.state_dict(),
-                        'epoch': epoch,
-                        'args': args,
-                    }, checkpoint_path)
+                    for checkpoint_path in checkpoint_paths:
+                        utils.save_on_master({
+                            'model': model_without_ddp.state_dict(),
+                            'optimizer': optimizer.state_dict(),
+                            'lr_scheduler': lr_scheduler.state_dict(),
+                            'epoch': epoch,
+                            'args': args,
+                        }, checkpoint_path)
 
-            writer.add_scalar('Train/lr', train_stats["lr"], epoch)
-            writer.add_scalar('Train/loss', train_stats["loss"], epoch)
+                writer.add_scalar('Train/lr', train_stats["lr"], epoch)
+                writer.add_scalar('Train/loss', train_stats["loss"], epoch)
+                writer.add_scalar('Train/position_loss', train_stats["position_loss"], epoch)
+                writer.add_scalar('Train/rotation_loss', train_stats["rotation_loss"], epoch)
+                writer.add_scalar('Train/times/time_per_epoch', stop - start, epoch)
 
-            # (!!) train_stats["loss_trans"] => train_stats["loss_trans_unscaled"] * args.translation_loss_coef (!!)
-            # writer.add_scalar('Train/loss_trans', train_stats["loss_trans"], epoch)
+                # Do evaluation on the validation set every n epochs
+                if epoch % args.eval_interval == 0:
+                    avg_trans_err, avg_rot_err = pose_evaluate(model, matcher, pose_evaluator, data_loader_val, args.eval_set, args.bbox_mode,
+                                  args.rotation_representation, device, str(output_dir), None, epoch)
 
-            # (!!) train_stats["position_loss"] = train_stats["loss_trans_unscaled"] (!!)
-            writer.add_scalar('Train/position_loss', train_stats["position_loss"], epoch)
+                    # Save model if best translation and rotation result
+                    if args.output_dir:
+                        checkpoint_loss = (avg_trans_err + avg_rot_err) / 2
+                        if checkpoint_loss < best_loss:
+                            best_loss = checkpoint_loss
+                            utils.save_on_master({
+                                'model': model_without_ddp.state_dict(),
+                                'optimizer': optimizer.state_dict(),
+                                'lr_scheduler': lr_scheduler.state_dict(),
+                                'epoch': epoch,
+                                'args': args,
+                            }, output_dir / 'checkpoint.pth')
 
-            # (!!) train_stats["loss_rot"] => train_stats["loss_rot_unscaled"] * args.rotation_loss_coef (!!)
-            # writer.add_scalar('Train/loss_rot', train_stats["loss_rot"], epoch)
+                    writer.add_scalar("Val/avg_trans_err", avg_trans_err, epoch)
+                    writer.add_scalar("Val/avg_rot_err", avg_rot_err, epoch)
+                    writer.add_scalar("Val/avg_err", (avg_trans_err + avg_rot_err) / 2, epoch)
 
-            # (!!) train_stats["rotation_loss"] = train_stats["loss_rot_unscaled"] (!!)
-            writer.add_scalar('Train/rotation_loss', train_stats["rotation_loss"], epoch)
-            writer.add_scalar('Train/times/time_per_epoch', stop - start, epoch)
+                    log_stats = {**{f'train_{k}': v for k, v in train_stats.items()},
+                                 'epoch': epoch,
+                                 'n_parameters': n_parameters}
+                else:
+                    log_stats = {**{f'train_{k}': v for k, v in train_stats.items()},
+                                 'epoch': epoch,
+                                 'n_parameters': n_parameters}
 
-            # Do evaluation on the validation set every n epochs
-            if epoch % args.eval_interval == 0:
-                avg_trans_err, avg_rot_err = pose_evaluate(model, matcher, pose_evaluator, data_loader_val, args.eval_set, args.bbox_mode,
-                              args.rotation_representation, device, str(output_dir), None, epoch)
-
+                if args.output_dir and utils.is_main_process():
+                    with (output_dir / "log.txt").open("a") as f:
+                        f.write(json.dumps(log_stats) + "\n")
+        else:
+            # New iteration-based evaluation
+            def eval_func_wrapper():
+                """评估函数包装器"""
+                avg_trans_err, avg_rot_err = pose_evaluate(
+                    model, matcher, pose_evaluator, data_loader_val, args.eval_set, 
+                    args.bbox_mode, args.rotation_representation, device, str(output_dir), None, None
+                )
+                
                 # Save model if best translation and rotation result
+                nonlocal best_loss
                 if args.output_dir:
                     checkpoint_loss = (avg_trans_err + avg_rot_err) / 2
                     if checkpoint_loss < best_loss:
@@ -524,22 +558,54 @@ def main(args):
                             'epoch': epoch,
                             'args': args,
                         }, output_dir / 'checkpoint.pth')
+                
+                writer.add_scalar("Val/avg_trans_err", avg_trans_err, global_iteration)
+                writer.add_scalar("Val/avg_rot_err", avg_rot_err, global_iteration)
+                writer.add_scalar("Val/avg_err", (avg_trans_err + avg_rot_err) / 2, global_iteration)
+                
+                print(f"评估结果 - 平移误差: {avg_trans_err:.4f}, 旋转误差: {avg_rot_err:.4f}")
+                return avg_trans_err, avg_rot_err
+            
+            for epoch in range(args.start_epoch, args.epochs):
+                if args.distributed:
+                    sampler_train.set_epoch(epoch)
 
-                writer.add_scalar("Val/avg_trans_err", avg_trans_err, epoch)
-                writer.add_scalar("Val/avg_rot_err", avg_rot_err, epoch)
-                writer.add_scalar("Val/avg_err", (avg_trans_err + avg_rot_err) / 2, epoch)
+                start = time.time()
+                train_stats, global_iteration = train_one_epoch_with_iter_eval(
+                    model, criterion, data_loader_train, optimizer, device, epoch, 
+                    global_iteration, args.eval_interval, eval_func_wrapper, {},
+                    args.clip_max_norm)
+                stop = time.time()
+
+                lr_scheduler.step()
+                if args.output_dir:
+                    checkpoint_paths = [output_dir / 'checkpoint_latest.pth']
+                    # extra checkpoint before LR drop and every save_interval epochs
+                    if (epoch + 1) % args.lr_drop == 0 or (epoch + 1) % args.save_interval == 0:
+                        checkpoint_paths.append(output_dir / f'checkpoint{epoch:04}.pth')
+
+                    for checkpoint_path in checkpoint_paths:
+                        utils.save_on_master({
+                            'model': model_without_ddp.state_dict(),
+                            'optimizer': optimizer.state_dict(),
+                            'lr_scheduler': lr_scheduler.state_dict(),
+                            'epoch': epoch,
+                            'args': args,
+                        }, checkpoint_path)
+
+                writer.add_scalar('Train/lr', train_stats["lr"], epoch)
+                writer.add_scalar('Train/loss', train_stats["loss"], epoch)
+                writer.add_scalar('Train/position_loss', train_stats["position_loss"], epoch)
+                writer.add_scalar('Train/rotation_loss', train_stats["rotation_loss"], epoch)
+                writer.add_scalar('Train/times/time_per_epoch', stop - start, epoch)
 
                 log_stats = {**{f'train_{k}': v for k, v in train_stats.items()},
                              'epoch': epoch,
                              'n_parameters': n_parameters}
-            else:
-                log_stats = {**{f'train_{k}': v for k, v in train_stats.items()},
-                             'epoch': epoch,
-                             'n_parameters': n_parameters}
 
-            if args.output_dir and utils.is_main_process():
-                with (output_dir / "log.txt").open("a") as f:
-                    f.write(json.dumps(log_stats) + "\n")
+                if args.output_dir and utils.is_main_process():
+                    with (output_dir / "log.txt").open("a") as f:
+                        f.write(json.dumps(log_stats) + "\n")
 
     except KeyboardInterrupt as e:
         warn(f"Keyboard Interrupt caught!")

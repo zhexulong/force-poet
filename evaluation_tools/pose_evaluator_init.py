@@ -40,7 +40,8 @@ def load_models(path, classes):
     """
 
     if not os.path.isfile(path + 'models_info.json'):
-        return None, None
+        print(f"Error: models_info.json not found at {path}")
+        return {}, {}
 
     with open(path + 'models_info.json', 'r') as f:
         models_info_data = json.load(f)

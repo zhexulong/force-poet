@@ -12,26 +12,26 @@ source /opt/anaconda3/etc/profile.d/conda.sh
 conda activate poet_isaac
 
 # Set CUDA device (modify as needed)
-export CUDA_VISIBLE_DEVICES=0
+export CUDA_VISIBLE_DEVICES=2
 
 # Training parameters
 CONFIG_FILE="configs/isaac_sim.yaml"
 OUTPUT_DIR="./results/isaac_sim_training"
-DATASET_PATH="../isaac_sim_poet_dataset"
+DATASET_PATH="../isaac_sim_poet_dataset_new"
 
 # Create output directory
 mkdir -p $OUTPUT_DIR
 
 # Run training
-nohup python main.py \
+CUDA_VISIBLE_DEVICES=2 nohup python main.py \
     --dataset custom \
     --dataset_path $DATASET_PATH \
     --output_dir $OUTPUT_DIR \
     --n_classes 22 \
-    --lr 1e-4 \
+    --lr 2e-5 \
     --lr_backbone 1e-5 \
     --batch_size 8 \
-    --epochs 50 \
+    --epochs 20 \
     --rgb_augmentation \
     --bbox_mode gt \
     --jitter_probability 0.5 \
@@ -45,6 +45,7 @@ nohup python main.py \
     --translation_loss_coef 2 \
     --rotation_loss_coef 1 \
     --eval_interval 1 \
+    --eval_by_epoch \
     --save_interval 5 \
     --device cuda \
     --class_info /annotations/classes.json \

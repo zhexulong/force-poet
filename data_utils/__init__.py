@@ -14,6 +14,7 @@
 from .torchvision_datasets import CocoDetection
 
 from .pose_dataset import build as build_pose
+from . import data_annotation
 
 
 def build_dataset(image_set, args):

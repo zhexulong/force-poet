@@ -61,7 +61,8 @@ class PoseDataset(CocoDetection):
     def __getitem__(self, idx):
         img, target = super(PoseDataset, self).__getitem__(idx)
         image_id = self.ids[idx]
-        target = {'image_id': image_id, 'annotations': target}
+        img_info = self.coco.loadImgs(image_id)[0]
+        target = {'image_id': image_id, 'annotations': target, 'camera_intrinsics': img_info['camera_intrinsics']}
         img, target = self.prepare(img, target) # Transforms bbox from xywh to xyxy
         if self._transforms is not None:
             img, target = self._transforms(img, target)  # Transforms bbox from un-normalized xyxy to normalized cxcywh (transforms.py 341)
@@ -118,6 +119,8 @@ class ProcessPoseData(object):
 
         image_id = target["image_id"]
         image_id = torch.tensor([image_id])
+
+
 
         anno = target["annotations"]
 
@@ -194,9 +197,21 @@ class ProcessPoseData(object):
                 q = np.array([obj["relative_pose"]['quaternions'] for obj in anno])
                 rel_rotation = quat2rot(q)
                 rel_rotation = torch.tensor(rel_rotation, dtype=torch.float32)
+        else:
+            # If no relative_pose field, use object_pose as relative pose
+            # Based on analysis, object_pose appears to be already in camera coordinate system
+            if obj_position is not None:
+                rel_position = obj_position.clone()
+            if obj_rotation is not None:
+                rel_rotation = obj_rotation.clone()
+                rel_quaternion = rot2quat(rel_rotation.numpy())
+                rel_quaternion = torch.tensor(rel_quaternion, dtype=torch.float32)
 
         intrinsics = None
-        if 'intrinsics' in anno[0]:
+        if 'camera_intrinsics' in target and target['camera_intrinsics']:
+            cam_intrinsics = torch.as_tensor(target['camera_intrinsics'], dtype=torch.float32)
+            intrinsics = cam_intrinsics.unsqueeze(0).repeat(len(anno), 1, 1)
+        elif anno and 'intrinsics' in anno[0]:
             intrinsics = [obj['intrinsics'] for obj in anno]
             intrinsics = torch.as_tensor(intrinsics, dtype=torch.float32)
 
@@ -217,15 +232,13 @@ class ProcessPoseData(object):
             rel_quaternion = rel_quaternion[keep]
         if rel_rotation is not None:
             rel_rotation = rel_rotation[keep]
-        if intrinsics is not None:
-            intrinsics = intrinsics[keep]
-
         target = {}
         target["boxes"] = boxes
         target["labels"] = classes
         if self.return_masks:
             target["masks"] = masks
         target["image_id"] = image_id
+
         if keypoints is not None:
             target["keypoints"] = keypoints
         if cam_position is not None:

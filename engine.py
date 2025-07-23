@@ -100,6 +100,97 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
     return {k: meter.global_avg for k, meter in metric_logger.meters.items()}
 
 
+def train_one_epoch_with_iter_eval(model: torch.nn.Module, criterion: torch.nn.Module,
+                                   data_loader: Iterable, optimizer: torch.optim.Optimizer,
+                                   device: torch.device, epoch: int, global_iteration: int,
+                                   eval_interval: int, eval_func, eval_args,
+                                   max_norm: float = 0):
+    """
+    训练一个epoch，并在指定的迭代间隔进行评估
+    
+    Args:
+        model: 模型
+        criterion: 损失函数
+        data_loader: 数据加载器
+        optimizer: 优化器
+        device: 设备
+        epoch: 当前epoch
+        global_iteration: 全局迭代计数器
+        eval_interval: 评估间隔（迭代数）
+        eval_func: 评估函数
+        eval_args: 评估函数的参数
+        max_norm: 梯度裁剪的最大范数
+    
+    Returns:
+        tuple: (训练统计信息, 更新后的全局迭代计数器)
+    """
+    model.train()
+    criterion.train()
+    metric_logger = utils.MetricLogger(delimiter="  ")
+    metric_logger.add_meter('lr', utils.SmoothedValue(window_size=1, fmt='{value:.6f}'))
+    metric_logger.add_meter('grad_norm', utils.SmoothedValue(window_size=1, fmt='{value:.2f}'))
+    metric_logger.add_meter('position_loss', utils.SmoothedValue(window_size=1, fmt='{value:.2f}'))
+    metric_logger.add_meter('rotation_loss', utils.SmoothedValue(window_size=1, fmt='{value:.2f}'))
+
+    header = 'Epoch: [{}]'.format(epoch)
+    print_freq = 10
+
+    prefetcher = data_prefetcher(data_loader, device, prefetch=True)
+    samples, targets = prefetcher.next()
+
+    # for samples, targets in metric_logger.log_every(data_loader, print_freq, header):
+    for iter_idx in metric_logger.log_every(range(len(data_loader)), print_freq, header):
+        global_iteration += 1
+
+        outputs, n_boxes_per_sample = model(samples, targets)
+        loss_dict = criterion(outputs, targets, n_boxes_per_sample)
+        weight_dict = criterion.weight_dict
+        losses = sum(loss_dict[k] * weight_dict[k] for k in loss_dict.keys() if k in weight_dict)
+
+        # reduce losses over all GPUs for logging purposes
+        loss_dict_reduced = utils.reduce_dict(loss_dict)
+        loss_dict_reduced_unscaled = {f'{k}_unscaled': v
+                                      for k, v in loss_dict_reduced.items()}
+        loss_dict_reduced_scaled = {k: v * weight_dict[k]
+                                    for k, v in loss_dict_reduced.items() if k in weight_dict}
+        losses_reduced_scaled = sum(loss_dict_reduced_scaled.values())
+
+        loss_value = losses_reduced_scaled.item()
+
+        if not math.isfinite(loss_value):
+            print("Loss is {}, stopping training".format(loss_value))
+            print(loss_dict_reduced)
+            sys.exit(1)
+
+        optimizer.zero_grad()
+        losses.backward()
+        if max_norm > 0:
+            grad_total_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm)
+        else:
+            grad_total_norm = utils.get_total_grad_norm(model.parameters(), max_norm)
+        optimizer.step()
+
+        metric_logger.update(loss=loss_value, **loss_dict_reduced_scaled, **loss_dict_reduced_unscaled)
+        metric_logger.update(position_loss=loss_dict_reduced['loss_trans'])
+        metric_logger.update(rotation_loss=loss_dict_reduced['loss_rot'])
+        metric_logger.update(lr=optimizer.param_groups[0]["lr"])
+        metric_logger.update(grad_norm=grad_total_norm)
+
+        # 检查是否需要进行评估
+        if global_iteration % eval_interval == 0:
+            print(f"\n=== 在第 {global_iteration} 次迭代后进行评估 ===")
+            eval_func(**eval_args)
+            model.train()  # 评估后重新设置为训练模式
+            criterion.train()
+
+        samples, targets = prefetcher.next()
+    
+    # gather the stats from all processes
+    metric_logger.synchronize_between_processes()
+    print("Averaged stats:", metric_logger)
+    return {k: meter.global_avg for k, meter in metric_logger.meters.items()}, global_iteration
+
+
 # Function to convert normalized bounding box to un-normalized pixel values
 def convert_to_pixel_values(img_width, img_height, bbox):
   cx, cy, w, h = bbox
@@ -174,8 +265,13 @@ def pose_evaluate(model, matcher, pose_evaluator, data_loader, image_set, bbox_m
         targets = [{k: v.to(device) for k, v in t.items()} for t in targets]
         outputs, n_boxes_per_sample = model(samples, targets)  # bbox format: cxcywh (unnormalized)
 
+        # Handle cases where there are no ground truth objects in the image
+        if not any(t['labels'].numel() > 0 for t in targets):
+            # If no ground truth objects, continue to the next batch
+            continue
+
         # TODO: Refactor case of no prediction(s)
-        if outputs == None:
+        if outputs is None:
             continue
 
         # # Visualize and save bounding boxes
