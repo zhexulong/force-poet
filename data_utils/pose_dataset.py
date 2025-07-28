@@ -16,6 +16,8 @@ Build a dataset for the pose estimation task. This includes loading the images a
 class, bounding box, relative pose and absolute poses. Moreover, data augmentation and bounding box pertubation is possible.
 """
 import copy
+import json
+import os
 from pathlib import Path
 
 import torch
@@ -24,10 +26,20 @@ import numpy as np
 import random
 from pycocotools import mask as coco_mask
 
-from .torchvision_datasets import CocoDetection
-from util.misc import get_local_rank, get_local_size
-from util.quaternion_ops import quat2rot, rot2quat
-import data_utils.transforms as T
+try:
+    from .torchvision_datasets import CocoDetection
+    from util.misc import get_local_rank, get_local_size
+    from util.quaternion_ops import quat2rot, rot2quat
+    import data_utils.transforms as T
+except ImportError:
+    # 当作为独立脚本运行时的导入
+    import sys
+    import os
+    sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    from data_utils.torchvision_datasets import CocoDetection
+    from util.misc import get_local_rank, get_local_size
+    from util.quaternion_ops import quat2rot, rot2quat
+    import data_utils.transforms as T
 from scipy.stats import truncnorm, uniform
 
 
@@ -87,7 +99,103 @@ class PoseDataset(CocoDetection):
 
             target["jitter_boxes"] = jitter_boxes
 
+        # Load force data from original scene files
+        target = self._load_force_data(img_info, target)
+
         return img, target
+
+    def _load_force_data(self, img_info, target):
+        """
+        Load force data from original scene_gt.json files
+        """
+        try:
+            # Extract scene_id and camera_id from file_name
+            file_name = img_info['file_name']  # e.g., "train/000001/rgb/000000.png"
+            parts = file_name.split('/')
+            if len(parts) >= 4:
+                set_name = parts[0]  # train/val
+                scene_name = parts[1]  # 000001
+                camera_name = parts[3].split('.')[0]  # 000000 (remove .png)
+                
+                # Convert camera name to the format used in scene_gt.json (remove leading zeros)
+                camera_id = str(int(camera_name))  # "000000" -> "0"
+                
+                # Construct path to scene_gt.json
+                scene_gt_path = os.path.join(self.root, set_name, scene_name, 'scene_gt.json')
+                
+                if os.path.exists(scene_gt_path):
+                    with open(scene_gt_path, 'r') as f:
+                        scene_data = json.load(f)
+                    
+                    # Get data for specific camera view
+                    if camera_id in scene_data:
+                        view_data = scene_data[camera_id]
+                        
+                        # Create force matrix from the force data
+                        force_matrix = self._create_force_matrix_from_scene_data(view_data, target)
+                        if force_matrix is not None:
+                            target['force_matrix'] = force_matrix
+                        
+        except Exception as e:
+            print(f"[WARNING] Failed to load force data: {e}")
+        
+        return target
+    
+    def _create_force_matrix_from_scene_data(self, view_data, target):
+        """
+        Create force matrix from scene_gt.json view data
+        """
+        # Get object information from target
+        if 'labels' not in target:
+            return None
+            
+        num_objects = len(target['labels'])
+        if num_objects == 0:
+            return None
+            
+        # Initialize force matrix
+        force_matrix = torch.zeros((num_objects, num_objects, 3), dtype=torch.float32)
+        
+        # Create mapping from obj_id to target index
+        # We need to match objects in view_data with objects in target
+        # This is tricky because target doesn't contain obj_id information
+        
+        # For now, assume objects are in the same order
+        # This is a simplification that may need refinement
+        if len(view_data) != num_objects:
+            print(f"[WARNING] Object count mismatch: scene_gt has {len(view_data)}, target has {num_objects}")
+            return None
+        
+        # Build obj_id to index mapping
+        obj_id_to_idx = {}
+        for idx, obj in enumerate(view_data):
+            obj_id = obj.get('obj_id')
+            if obj_id is not None:
+                obj_id_to_idx[obj_id] = idx
+        
+        # Fill force matrix
+        force_count = 0
+        for obj_idx, obj in enumerate(view_data):
+            forces_list = obj.get('forces', [])
+            
+            for force_data in forces_list:
+                source_obj_id = force_data.get('source_obj_id')
+                target_obj_id = force_data.get('target_obj_id')
+                force_vector = force_data.get('force_vector', [0.0, 0.0, 0.0])
+                
+                # Map obj_ids to array indices
+                if source_obj_id in obj_id_to_idx and target_obj_id in obj_id_to_idx:
+                    source_idx = obj_id_to_idx[source_obj_id]
+                    target_idx = obj_id_to_idx[target_obj_id]
+                    
+                    if 0 <= source_idx < num_objects and 0 <= target_idx < num_objects:
+                        force_matrix[source_idx, target_idx, :] = torch.tensor(force_vector, dtype=torch.float32)
+                        force_count += 1
+        
+        if force_count > 0:
+            return force_matrix
+        else:
+            return None
 
 
 def convert_coco_poly_to_mask(segmentations, height, width):
@@ -214,6 +322,42 @@ class ProcessPoseData(object):
         elif anno and 'intrinsics' in anno[0]:
             intrinsics = [obj['intrinsics'] for obj in anno]
             intrinsics = torch.as_tensor(intrinsics, dtype=torch.float32)
+        
+        # Load mass and force information
+        masses = None
+        force_matrix = None
+        
+        if anno and 'mass' in anno[0]:
+            masses = [obj.get('mass', 0.0) for obj in anno]
+            masses = torch.tensor(masses, dtype=torch.float32)
+        
+        # Load forces if available from annotation (legacy support)
+        if anno and 'forces' in anno[0]:
+            # Create force matrix N x N x 3
+            num_objects = len(anno)
+            force_matrix = torch.zeros((num_objects, num_objects, 3), dtype=torch.float32)
+            
+            # Build obj_id to index mapping for this image
+            obj_ids = [obj.get('obj_id', i) for i, obj in enumerate(anno)]
+            id_to_idx = {obj_id: idx for idx, obj_id in enumerate(obj_ids)}
+            
+            # Fill force matrix from forces data
+            force_count = 0
+            for obj_idx, obj in enumerate(anno):
+                forces_list = obj.get('forces', [])
+                
+                if forces_list:  # If this object has force interactions
+                    for force_data in forces_list:
+                        source_obj_id = force_data.get('source_obj_id')
+                        target_obj_id = force_data.get('target_obj_id')
+                        force_vector = force_data.get('force_vector', [0.0, 0.0, 0.0])
+                        
+                        # Map obj_ids to array indices
+                        if source_obj_id in id_to_idx and target_obj_id in id_to_idx:
+                            source_idx = id_to_idx[source_obj_id]
+                            target_idx = id_to_idx[target_obj_id]
+                            force_matrix[source_idx, target_idx, :] = torch.tensor(force_vector, dtype=torch.float32)
+                            force_count += 1
 
         keep = (boxes[:, 3] > boxes[:, 1]) & (boxes[:, 2] > boxes[:, 0])
         boxes = boxes[keep]
@@ -232,6 +376,11 @@ class ProcessPoseData(object):
             rel_quaternion = rel_quaternion[keep]
         if rel_rotation is not None:
             rel_rotation = rel_rotation[keep]
+        if masses is not None:
+            masses = masses[keep]
+        if force_matrix is not None:
+            # Apply keep mask to force matrix (both dimensions)
+            force_matrix = force_matrix[keep][:, keep]
         target = {}
         target["boxes"] = boxes
         target["labels"] = classes
@@ -257,6 +406,10 @@ class ProcessPoseData(object):
             target["relative_rotation"] = rel_rotation
         if intrinsics is not None:
             target["intrinsics"] = intrinsics
+        if masses is not None:
+            target["masses"] = masses
+        if force_matrix is not None:
+            target["force_matrix"] = force_matrix
 
         # for conversion to coco api
         area = torch.tensor([obj["area"] for obj in anno])

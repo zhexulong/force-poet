@@ -49,6 +49,7 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
     metric_logger.add_meter('grad_norm', utils.SmoothedValue(window_size=1, fmt='{value:.2f}'))
     metric_logger.add_meter('position_loss', utils.SmoothedValue(window_size=1, fmt='{value:.2f}'))
     metric_logger.add_meter('rotation_loss', utils.SmoothedValue(window_size=1, fmt='{value:.2f}'))
+    metric_logger.add_meter('force_loss', utils.SmoothedValue(window_size=1, fmt='{value:.2f}'))
 
     header = 'Epoch: [{}]'.format(epoch)
     print_freq = 10
@@ -61,7 +62,19 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
 
         outputs, n_boxes_per_sample = model(samples, targets)
         loss_dict = criterion(outputs, targets, n_boxes_per_sample)
-        weight_dict = criterion.weight_dict
+        weight_dict = criterion.weight_dict.copy()  # 创建副本避免修改原始权重
+        
+        # 如果epoch小于20，将所有force loss权重设置为0
+        if epoch < 20:
+            force_loss_keys = ['loss_force_matrix', 'loss_force_symmetry', 'loss_force_consistency']
+            for force_key in force_loss_keys:
+                if force_key in weight_dict:
+                    weight_dict[force_key] = 0.0
+                # 对所有auxiliary loss也设置为0
+                for key in list(weight_dict.keys()):
+                    if key.startswith(f'{force_key}_'):
+                        weight_dict[key] = 0.0
+        
         losses = sum(loss_dict[k] * weight_dict[k] for k in loss_dict.keys() if k in weight_dict)
 
         # reduce losses over all GPUs for logging purposes
@@ -88,8 +101,10 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
         optimizer.step()
 
         metric_logger.update(loss=loss_value, **loss_dict_reduced_scaled, **loss_dict_reduced_unscaled)
-        metric_logger.update(position_loss=loss_dict_reduced['loss_trans'])
-        metric_logger.update(rotation_loss=loss_dict_reduced['loss_rot'])
+        metric_logger.update(position_loss=loss_dict_reduced['loss_trans'] * weight_dict['loss_trans'])
+        metric_logger.update(rotation_loss=loss_dict_reduced['loss_rot'] * weight_dict['loss_rot'])
+        if 'loss_force_matrix' in loss_dict_reduced:
+            metric_logger.update(force_loss=loss_dict_reduced['loss_force_matrix'] * weight_dict['loss_force_matrix'])
         metric_logger.update(lr=optimizer.param_groups[0]["lr"])
         metric_logger.update(grad_norm=grad_total_norm)
 
@@ -131,6 +146,7 @@ def train_one_epoch_with_iter_eval(model: torch.nn.Module, criterion: torch.nn.M
     metric_logger.add_meter('grad_norm', utils.SmoothedValue(window_size=1, fmt='{value:.2f}'))
     metric_logger.add_meter('position_loss', utils.SmoothedValue(window_size=1, fmt='{value:.2f}'))
     metric_logger.add_meter('rotation_loss', utils.SmoothedValue(window_size=1, fmt='{value:.2f}'))
+    metric_logger.add_meter('force_loss', utils.SmoothedValue(window_size=1, fmt='{value:.2f}'))
 
     header = 'Epoch: [{}]'.format(epoch)
     print_freq = 10
@@ -144,7 +160,19 @@ def train_one_epoch_with_iter_eval(model: torch.nn.Module, criterion: torch.nn.M
 
         outputs, n_boxes_per_sample = model(samples, targets)
         loss_dict = criterion(outputs, targets, n_boxes_per_sample)
-        weight_dict = criterion.weight_dict
+        weight_dict = criterion.weight_dict.copy()  # 创建副本避免修改原始权重
+        
+        # 如果epoch小于20，将所有force loss权重设置为0
+        if epoch < 20:
+            force_loss_keys = ['loss_force_matrix', 'loss_force_symmetry', 'loss_force_consistency']
+            for force_key in force_loss_keys:
+                if force_key in weight_dict:
+                    weight_dict[force_key] = 0.0
+                # 对所有auxiliary loss也设置为0
+                for key in list(weight_dict.keys()):
+                    if key.startswith(f'{force_key}_'):
+                        weight_dict[key] = 0.0
+        
         losses = sum(loss_dict[k] * weight_dict[k] for k in loss_dict.keys() if k in weight_dict)
 
         # reduce losses over all GPUs for logging purposes
@@ -171,8 +199,10 @@ def train_one_epoch_with_iter_eval(model: torch.nn.Module, criterion: torch.nn.M
         optimizer.step()
 
         metric_logger.update(loss=loss_value, **loss_dict_reduced_scaled, **loss_dict_reduced_unscaled)
-        metric_logger.update(position_loss=loss_dict_reduced['loss_trans'])
-        metric_logger.update(rotation_loss=loss_dict_reduced['loss_rot'])
+        metric_logger.update(position_loss=loss_dict_reduced['loss_trans'] * weight_dict['loss_trans'])
+        metric_logger.update(rotation_loss=loss_dict_reduced['loss_rot'] * weight_dict['loss_rot'])
+        if 'loss_force_matrix' in loss_dict_reduced:
+            metric_logger.update(force_loss=loss_dict_reduced['loss_force_matrix'] * weight_dict['loss_force_matrix'])
         metric_logger.update(lr=optimizer.param_groups[0]["lr"])
         metric_logger.update(grad_norm=grad_total_norm)
 
@@ -336,20 +366,36 @@ def pose_evaluate(model, matcher, pose_evaluator, data_loader, image_set, bbox_m
 
         pred_translations = outputs_without_aux["pred_translation"][idx].detach().cpu().numpy()
         pred_rotations = outputs_without_aux["pred_rotation"][idx].detach().cpu().numpy()
+        
+        # Extract force matrix predictions if available
+        pred_force_matrix = None
+        if "pred_force_matrix" in outputs_without_aux:
+            pred_force_matrix = outputs_without_aux["pred_force_matrix"][idx].detach().cpu().numpy()  # [n_matched, n_queries, 3]
 
         if rotation_mode in ['quat', 'silho_quat']:
             pred_rotations = quat2rot(pred_rotations)
 
         tgt_translations = torch.cat([t['relative_position'][i] for t, (_, i) in zip(targets, indices)], dim=0).detach().cpu().numpy()
         tgt_rotations = torch.cat([t['relative_rotation'][i] for t, (_, i) in zip(targets, indices)], dim=0).detach().cpu().numpy()
+        
+        # Extract target force matrices if available
+        tgt_force_matrices = []
+        for t, (_, i) in zip(targets, indices):
+            if 'force_matrix' in t and t['force_matrix'] is not None:
+                target_matrix = t['force_matrix'].detach().cpu().numpy()  # [N, N, 3]
+                tgt_force_matrices.append(target_matrix)
+            else:
+                # Create empty matrix if no force matrix available
+                n_objects = len(i)
+                tgt_force_matrices.append(np.zeros((n_objects, n_objects, 3)))
 
         obj_classes_idx = torch.cat([t['labels'][i] for t, (_, i) in zip(targets, indices)], dim=0).detach().cpu().numpy()
         intrinsics = torch.cat([t['intrinsics'][i] for t, (_, i) in zip(targets, indices)], dim=0).detach().cpu().numpy()
         img_files = [data_loader.dataset.coco.loadImgs(t["image_id"].item())[0]['file_name'] for t, (_, i) in zip(targets, indices) for _ in range(0, len(i))]
 
         # Iterate over all predicted objects and save them in the pose evaluator
-        for cls_idx, img_file, intrinsic, pred_translation, pred_rotation, tgt_translation, tgt_rotation in \
-                zip(obj_classes_idx, img_files, intrinsics, pred_translations, pred_rotations, tgt_translations, tgt_rotations):
+        for i, (cls_idx, img_file, intrinsic, pred_translation, pred_rotation, tgt_translation, tgt_rotation) in \
+                enumerate(zip(obj_classes_idx, img_files, intrinsics, pred_translations, pred_rotations, tgt_translations, tgt_rotations)):
             # cls = pose_evaluator.classes[cls_idx - 1]
             cls = pose_evaluator.classes_map[str(cls_idx)]
             pose_evaluator.poses_pred[cls].append(
@@ -359,6 +405,66 @@ def pose_evaluate(model, matcher, pose_evaluator, data_loader, image_set, bbox_m
             pose_evaluator.poses_img[cls].append(img_file)
             pose_evaluator.num[cls] += 1
             pose_evaluator.camera_intrinsics[cls].append(intrinsic)
+
+        # Store force matrix predictions and targets if available
+        if pred_force_matrix is not None and tgt_force_matrices:
+            batch_size = pred_force_matrix.shape[0]
+            
+            # Group by image/batch for proper force matrix storage
+            current_idx = 0
+            for batch_idx, (batch_target, (src_idx, tgt_idx)) in enumerate(zip(targets, indices)):
+                if batch_idx >= len(tgt_force_matrices):
+                    break
+                    
+                n_objects_in_batch = len(tgt_idx)
+                if n_objects_in_batch == 0:
+                    continue
+                
+                # Extract predicted and ground truth force matrices for this batch
+                if current_idx + n_objects_in_batch <= batch_size:
+                    # Get the force matrix for this batch - we take the first object's perspective
+                    # Since force matrix is [N, N, 3], we use the full matrix
+                    batch_pred_matrix = pred_force_matrix[current_idx:current_idx + n_objects_in_batch]  # [n_objects, n_queries, 3]
+                    batch_gt_matrix = tgt_force_matrices[batch_idx]  # [N, N, 3]
+                    
+                    # For storage, we need to decide how to associate force matrices with classes
+                    # Option 1: Store the full matrix for the first class in the batch
+                    # Option 2: Store per-object force relationships
+                    
+                    # Using Option 1 for simplicity - store full matrix for primary class
+                    if n_objects_in_batch > 0:
+                        primary_cls_idx = obj_classes_idx[current_idx]
+                        primary_cls = pose_evaluator.classes_map[str(primary_cls_idx)]
+                        
+                        # Reshape predicted matrix to match ground truth format [N, N, 3]
+                        # Here we assume the predicted matrix represents force relationships
+                        # between the n_queries objects in the scene
+                        n_queries = batch_pred_matrix.shape[1]
+                        reshaped_pred_matrix = batch_pred_matrix[0]  # Take first object's view: [n_queries, 3]
+                        
+                        # Convert to full matrix format [n_queries, n_queries, 3]
+                        full_pred_matrix = np.zeros((n_queries, n_queries, 3))
+                        for j in range(n_objects_in_batch):
+                            if j < batch_pred_matrix.shape[0]:
+                                full_pred_matrix[j, :, :] = batch_pred_matrix[j]  # [n_queries, 3]
+                        
+                        # Ensure ground truth matrix matches the prediction matrix size
+                        gt_matrix_resized = batch_gt_matrix.copy()
+                        if gt_matrix_resized.shape[0] != n_queries or gt_matrix_resized.shape[1] != n_queries:
+                            # Resize ground truth to match prediction
+                            if gt_matrix_resized.shape[0] < n_queries:
+                                pad_size = n_queries - gt_matrix_resized.shape[0]
+                                gt_matrix_resized = np.pad(gt_matrix_resized, 
+                                                         ((0, pad_size), (0, pad_size), (0, 0)), 
+                                                         mode='constant', constant_values=0)
+                            else:
+                                gt_matrix_resized = gt_matrix_resized[:n_queries, :n_queries, :]
+                        
+                        # Store the force matrices
+                        pose_evaluator.force_matrices_pred[primary_cls].append(full_pred_matrix)
+                        pose_evaluator.force_matrices_gt[primary_cls].append(gt_matrix_resized)
+                    
+                    current_idx += n_objects_in_batch
 
         batch_total_time = time.time() - batch_start_time
         batch_total_time_str = str(datetime.timedelta(seconds=int(batch_total_time)))
@@ -386,10 +492,66 @@ def pose_evaluate(model, matcher, pose_evaluator, data_loader, image_set, bbox_m
     avg_trans = pose_evaluator.calculate_class_avg_translation_error(output_eval_dir, epoch)
     print("Start Calculating Average Rotation Error")
     avg_rot = pose_evaluator.calculate_class_avg_rotation_error(output_eval_dir, epoch)
+    
+    # Add force evaluation if force predictions are available
+    avg_force = None
+    force_mae = None
+    force_rmse = None
+    force_matrix_results = None
+    avg_force_matrix_error = None
+    
+    has_force_data = any(len(pose_evaluator.forces_pred[cls]) > 0 for cls in pose_evaluator.classes)
+    has_force_matrix_data = any(len(pose_evaluator.force_matrices_pred[cls]) > 0 for cls in pose_evaluator.classes)
+    
+    # Traditional force evaluation (if simple force data exists)
+    if has_force_data:
+        print("Start Calculating Force Prediction Metrics")
+        force_mae, force_rmse = pose_evaluator.evaluate_force_prediction(output_eval_dir, epoch)
+        print("Start Calculating Average Force Error")
+        avg_force = pose_evaluator.calculate_class_avg_force_error(output_eval_dir, epoch)
+        print(f"Force Evaluation Results:")
+        print(f"  Average Force Error: {avg_force:.6f}")
+        print(f"  Force MAE: {force_mae:.6f}")
+        print(f"  Force RMSE: {force_rmse:.6f}")
+    
+    # Force matrix evaluation (detailed force interaction analysis)
+    if has_force_matrix_data:
+        print("Start Calculating Detailed Force Matrix Metrics")
+        force_matrix_results = pose_evaluator.evaluate_force_matrix_prediction(output_eval_dir, epoch)
+        print("Start Calculating Average Force Matrix Error")
+        avg_force_matrix_error = pose_evaluator.calculate_class_avg_force_matrix_error(output_eval_dir, epoch)
+        
+        # Print detailed force matrix results
+        if force_matrix_results and "overall" in force_matrix_results:
+            overall_results = force_matrix_results["overall"]
+            print(f"Force Matrix Evaluation Results:")
+            print(f"  Average Force Matrix Error: {avg_force_matrix_error:.6f}")
+            print(f"  Vector MSE: {overall_results['vector_mse']:.6f}")
+            print(f"  Vector MAE: {overall_results['vector_mae']:.6f}")
+            print(f"  Direction Accuracy: {overall_results['direction_accuracy']:.6f}")
+            print(f"  Detection Accuracy: {overall_results['detection_accuracy']:.6f}")
+            print(f"  Precision: {overall_results['precision']:.6f}")
+            print(f"  Recall: {overall_results['recall']:.6f}")
+            print(f"  F1 Score: {overall_results['f1_score']:.6f}")
+    
+    if not has_force_data and not has_force_matrix_data:
+        print("No force data available for evaluation")
+    
     total_time = time.time() - start_time
     total_time_str = str(datetime.timedelta(seconds=int(total_time)))
     print("Evaluation time: {}".format(total_time_str))
-    return avg_trans, avg_rot
+    
+    # Return evaluation results
+    eval_results = {
+        'avg_trans': avg_trans,
+        'avg_rot': avg_rot,
+        'avg_force': avg_force,
+        'force_mae': force_mae,
+        'force_rmse': force_rmse,
+        'avg_force_matrix_error': avg_force_matrix_error,
+        'force_matrix_results': force_matrix_results
+    }
+    return eval_results
 
 
 @torch.no_grad()

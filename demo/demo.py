@@ -27,11 +27,162 @@ import rospy
 from geometry_msgs.msg import PoseStamped
 
 import warnings
+import torch
 
 warnings.filterwarnings("ignore", category=DeprecationWarning)
 
 
 STOP_THREADS = False
+
+
+def draw_contact_forces_on_image(rgb_image, force_matrix, poses_6d, camera_intrinsics, scale_factor=0.05, min_force_magnitude=0.1):
+    """
+    在RGB图像上绘制接触力向量
+    
+    Args:
+        rgb_image: RGB图像 (numpy array)
+        force_matrix: 力矩阵 [N, N, 3] - N个物体之间的力
+        poses_6d: 物体6D位姿 [N, 7] - position + quaternion
+        camera_intrinsics: 相机内参矩阵
+        scale_factor: 力向量可视化缩放因子
+        min_force_magnitude: 最小显示力大小
+    """
+    if force_matrix is None or poses_6d is None:
+        return rgb_image
+    
+    img = rgb_image.copy()
+    h, w = img.shape[:2]
+    
+    # 获取有效物体数量
+    num_objects = force_matrix.shape[0]
+    
+    # 颜色列表（BGR格式）
+    colors = [(0, 0, 255), (0, 255, 0), (255, 0, 0), (255, 255, 0), (255, 0, 255), (0, 255, 255)]
+    
+    for i in range(num_objects):
+        for j in range(num_objects):
+            if i == j:  # 跳过自身作用力
+                continue
+                
+            force_vector = force_matrix[i, j]  # 物体j对物体i的力
+            force_magnitude = np.linalg.norm(force_vector)
+            
+            if force_magnitude < min_force_magnitude:
+                continue
+            
+            # 获取物体位置
+            pos_i = poses_6d[i][:3]  # 物体i的位置
+            
+            # 力向量终点位置
+            end_pos = pos_i + force_vector * scale_factor
+            
+            # 投影到2D图像
+            try:
+                points_3d = np.array([pos_i, end_pos]).reshape(-1, 3)
+                rvec = np.zeros(3)
+                tvec = np.zeros(3)
+                
+                points_2d, _ = cv2.projectPoints(points_3d, rvec, tvec, camera_intrinsics, None)
+                points_2d = points_2d.reshape(-1, 2).astype(int)
+                
+                start_point = tuple(points_2d[0])
+                end_point = tuple(points_2d[1])
+                
+                # 检查点是否在图像范围内
+                if (0 <= start_point[0] < w and 0 <= start_point[1] < h and
+                    0 <= end_point[0] < w and 0 <= end_point[1] < h):
+                    
+                    color = colors[i % len(colors)]
+                    
+                    # 绘制力向量箭头
+                    cv2.arrowedLine(img, start_point, end_point, color, 2, tipLength=0.3)
+                    
+                    # 添加力大小标签
+                    force_text = f"{force_magnitude:.2f}N"
+                    cv2.putText(img, force_text, end_point, cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
+                    
+            except Exception as e:
+                logger.warning(f"Failed to draw force vector {i}->{j}: {e}")
+                continue
+    
+    return img
+
+
+def draw_6d_poses_on_image(rgb_image, poses_6d, camera_intrinsics, axis_length=0.05, obj_ids=None):
+    """
+    在RGB图像上绘制6D位姿坐标轴
+    
+    Args:
+        rgb_image: RGB图像 (numpy array)
+        poses_6d: 物体6D位姿 [N, 7] - position + quaternion
+        camera_intrinsics: 相机内参矩阵
+        axis_length: 坐标轴长度
+        obj_ids: 物体ID列表
+    """
+    if poses_6d is None or len(poses_6d) == 0:
+        return rgb_image
+    
+    img = rgb_image.copy()
+    h, w = img.shape[:2]
+    
+    # 坐标轴颜色 (BGR格式): X-红, Y-绿, Z-蓝
+    axis_colors = [(0, 0, 255), (0, 255, 0), (255, 0, 0)]
+    axis_labels = ['X', 'Y', 'Z']
+    
+    for obj_idx, pose in enumerate(poses_6d):
+        position = pose[:3]
+        quaternion = pose[3:]  # [qx, qy, qz, qw]
+        
+        # 转换四元数为旋转矩阵
+        r = Rotation.from_quat(quaternion)
+        rotation_matrix = r.as_matrix()
+        
+        # 定义坐标轴向量
+        axes = np.array([[axis_length, 0, 0], [0, axis_length, 0], [0, 0, axis_length]])
+        
+        # 旋转坐标轴
+        rotated_axes = rotation_matrix @ axes.T
+        
+        # 计算坐标轴终点
+        axis_points = position.reshape(1, 3) + rotated_axes.T
+        all_points = np.vstack([position.reshape(1, 3), axis_points])
+        
+        try:
+            # 投影到2D
+            rvec = np.zeros(3)
+            tvec = np.zeros(3)
+            points_2d, _ = cv2.projectPoints(all_points, rvec, tvec, camera_intrinsics, None)
+            points_2d = points_2d.reshape(-1, 2).astype(int)
+            
+            origin_2d = tuple(points_2d[0])
+            axis_ends_2d = points_2d[1:4]
+            
+            # 检查原点是否在图像范围内
+            if 0 <= origin_2d[0] < w and 0 <= origin_2d[1] < h:
+                # 绘制原点
+                cv2.circle(img, origin_2d, 3, (255, 255, 255), -1)
+                
+                # 添加物体ID标签
+                if obj_ids is not None:
+                    label = str(obj_ids[obj_idx])
+                    cv2.putText(img, label, (origin_2d[0] + 5, origin_2d[1] - 5), 
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+                
+                # 绘制坐标轴
+                for axis_idx in range(3):
+                    end_point = tuple(axis_ends_2d[axis_idx])
+                    if 0 <= end_point[0] < w and 0 <= end_point[1] < h:
+                        cv2.line(img, origin_2d, end_point, axis_colors[axis_idx], 2)
+                        # 添加轴标签
+                        cv2.putText(img, axis_labels[axis_idx], 
+                                   (end_point[0] + 2, end_point[1] + 2),
+                                   cv2.FONT_HERSHEY_SIMPLEX, 0.4, axis_colors[axis_idx], 1)
+                        
+        except Exception as e:
+            logger.warning(f"Failed to draw pose for object {obj_idx}: {e}")
+            continue
+    
+    return img
 
 
 # display image in pygame
@@ -182,20 +333,68 @@ def inference_thread(image_display: pygame.Surface):
 
         # Do inference ...
         res: dict = {}
+        force_matrix = None
+        poses_6d = None
         try:
             res, inf_time, poet_time, t_rmse, R_rmse = engine.inference(frame, gt, frame_number)
+            
+            # Extract force prediction if available
+            if hasattr(engine, 'last_outputs') and engine.last_outputs is not None:
+                outputs = engine.last_outputs
+                if 'pred_force_matrix' in outputs:
+                    pred_force_matrix = outputs['pred_force_matrix'][0].detach().cpu().numpy()  # [n_queries, n_queries, 3]
+                    force_matrix = pred_force_matrix
+                    logger.info(f"[{frame_number:04d}] Force matrix shape: {force_matrix.shape}")
+                
+                # Extract poses for visualization
+                if res and len(res) > 0:
+                    poses_6d = []
+                    obj_ids = []
+                    for obj_idx in res:
+                        obj_data = res[obj_idx]
+                        t = obj_data['t']  # translation
+                        R = obj_data['rot']  # rotation matrix
+                        
+                        # Convert rotation matrix to quaternion
+                        r = Rotation.from_matrix(R)
+                        quat = r.as_quat()  # [qx, qy, qz, qw]
+                        
+                        # Combine translation and quaternion
+                        pose_6d = np.concatenate([t, quat])
+                        poses_6d.append(pose_6d)
+                        obj_ids.append(obj_data.get('class', obj_idx))
+                    
+                    poses_6d = np.array(poses_6d) if poses_6d else None
+                    
         except Exception as error:
-            logger.warn(error.with_traceback())
+            logger.warn(f"Inference error: {error}")
             frame_number += 1
             continue
 
-        # Display annotated image
+        # Enhanced visualization with force vectors and poses
+        display_image = None
         if res and res[0] and "img" in res[0]:
-            display_img(res[0]["img"], image_display)
-
-            # path = bbox_folder
-            # name = f"frame{frame_number}_1.png"
-            # cv2.imwrite(os.path.join(path, name), cv2.cvtColor(res[0]["img"], cv2.COLOR_RGB2BGR))
+            # Get the annotated image from inference
+            display_image = res[0]["img"]
+            
+            # Add 6D pose visualization
+            if poses_6d is not None:
+                # Create a simple camera intrinsics matrix for visualization
+                # These values should match your actual camera parameters
+                cam_K = np.array([[525.0, 0, 320.0],
+                                 [0, 525.0, 240.0],
+                                 [0, 0, 1.0]])
+                
+                display_image = draw_6d_poses_on_image(
+                    display_image, poses_6d, cam_K, axis_length=0.05, obj_ids=obj_ids)
+            
+            # Add force visualization
+            if force_matrix is not None and poses_6d is not None:
+                display_image = draw_contact_forces_on_image(
+                    display_image, force_matrix, poses_6d, cam_K, 
+                    scale_factor=0.05, min_force_magnitude=0.1)
+                    
+            display_img(display_image, image_display)
         else:
             display_img(np.array(frame), image_display)
             logger.warn(f"[{frame_number:04d}] Got no prediction for frame ...")
@@ -261,60 +460,49 @@ engine: InferenceEngine = None
 if __name__ == "__main__":
     args = Args()
 
+    # Basic model configuration
     args.enc_layers = 5
     args.dec_layers = 5
     args.nheads = 16
-    args.batch_size = 16
-    args.eval_batch_size = 16
-    args.n_classes = 16
-    args.class_mode = "agnostic"
+    args.batch_size = 8
+    args.eval_batch_size = 8
+    args.n_classes = 21
+    args.class_mode = "specific"
 
-    args.backbone = "dinoyolo"
-    args.lr_backbone = 0.0
-    args.backbone_cfg = "./configs/ycbv_yolov4-csp.cfg"
-    args.backbone_weights = "/home/wngicg/Desktop/repos/ycbv_yolo_weights.pt"
-    args.dataset_path = "/home/wngicg/Desktop/repos/datasets/custom"
-    args.class_info = "/annotations/custom_classes.json"
-    args.model_symmetry = "/annotations/custom_symmetries.json"
+    # Backbone configuration for Isaac Sim dataset
+    args.backbone = "maskrcnn"
+    args.lr_backbone = 1e-5
+    args.backbone_cfg = "./configs/ycbv_rcnn.yaml"
+    args.backbone_weights = "./weights/ycbv_maskrcnn_checkpoint.pth.tar"
+    
+    # Dataset configuration
+    args.dataset_path = "../isaac_sim_poet_dataset_force"
+    args.class_info = "/annotations/classes.json"
+    args.model_symmetry = "/annotations/isaac_sim_symmetries.json"
 
-    # args.train_set = "train"
-    # args.eval_set = "val"
-    # args.test_set = "test"
-
+    # Force prediction configuration
+    args.use_force_prediction = True
+    args.force_loss_coef = 1.0
+    
+    # Evaluation settings
     args.eval_interval = 1
-    # args.output_dir = "train/"
-    args.bbox_mode = "backbone"
+    args.bbox_mode = "gt"  # Use ground truth bounding boxes for inference
     args.dataset = "custom"
-    args.grayscale = True  # Assuming this is a flag, set to True
-    args.rgb_augmentation = True  # Assuming this is a flag, set to True
-    # args.translation_loss_coef = 2.0
-    # args.rotation_loss_coef = 1.0
-    # args.epochs = 0
-    # args.lr = 0.000035
-    # args.lr_drop = 50
-    # args.gamma = 0.1
-    # args.resume = "/home/wngicg/repos/poet/results/finetune/drone_data/2024-11-27_09_19_53/checkpoint.pth"
-    #args.resume = "/home/wngicg/Desktop/repos/poet/results/train/2024-10-06_12_31_12/checkpoint.pth"
-    args.resume = "/media/wngicg/ESD-USB/checkpoint.pth"
+    args.grayscale = False
+    args.rgb_augmentation = True
+    
+    # Model checkpoint from Isaac Sim training results
+    args.resume = "/data/gplong/force_map_project/w-poet/poet/results/isaac_sim_training/2025-07-26_05:51:59/checkpoint.pth"
     args.device = "cuda"
 
-    #args.dino_caption = "black cabinet."
-    args.dino_caption = "human doll."
+    # Demo-specific settings for object detection
+    args.dino_caption = "objects"
     args.dino_args = "models/groundingdino/config/GroundingDINO_SwinT_OGC.py"
     args.dino_checkpoint = "models/groundingdino/weights/groundingdino_swint_ogc.pth"
     args.dino_box_threshold = 0.35
     args.dino_txt_threshold = 0.25
     args.dino_cos_cim = 0.9
     args.dino_bbox_viz = False
-
-
-    #     parser.add_argument('--dino_caption', default=None, type=str, help='Caption for Grounding DINO object detection')
-    # parser.add_argument('--dino_args', default="models/groundingdino/config/GroundingDINO_SwinT_OGC.py", type=str, help='Args for Grounding DINO backbone')
-    # parser.add_argument('--dino_checkpoint', default="models/groundingdino/weights/groundingdino_swint_ogc.pth", type=str, help='Checkpoint for Grounding DINO backbone')
-    # parser.add_argument('--dino_box_threshold', default=0.35, type=float, help='Bounding Box threshold for Grounding DINO')
-    # parser.add_argument('--dino_txt_threshold', default=0.25, type=float, help='Text threshold for Grounding DINO')
-    # parser.add_argument('--dino_cos_sim', default=0.9, type=float, help='Cosine similarity for matching Grounding DINO predictions to labels')
-    # parser.add_argument('--dino_bbox_viz', default=False, type=bool, help='Visualize Grounding DINO bounding box predictions and labels')
 
     # ---------------------------------------------------------------------------------------------
 

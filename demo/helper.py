@@ -1,5 +1,16 @@
 import numpy as np
-import rospy
+try:
+    import rospy
+    ROS_AVAILABLE = True
+except ImportError:
+    ROS_AVAILABLE = False
+    # Create a dummy rospy.Time class for compatibility
+    class DummyTime:
+        def __init__(self):
+            self.secs = 0
+            self.nsecs = 0
+    rospy = type('rospy', (), {'Time': DummyTime})
+
 from scipy.spatial.transform import Rotation
 
 IMG_WIDTH = 640
@@ -29,7 +40,7 @@ class Rotation_:
         return self.R
 
 class Pose:
-    def __init__(self, t: np.ndarray, R: np.ndarray, id: int, timestamp: rospy.Time):
+    def __init__(self, t: np.ndarray, R: np.ndarray, id: int, timestamp):
         self.t = Translation_(t[0], t[1], t[2])
         self.R = Rotation_(R)
         self.id = id
@@ -91,6 +102,11 @@ class Args:
     self.aux_loss = True
     self.translation_loss_coef = 1.0
     self.rotation_loss_coef = 1.0
+    
+    # Force prediction parameters
+    self.use_force_prediction = False
+    self.force_loss_coef = 1.0
+    self.use_graph_transformer = False
 
     # Dataset parameters
     self.dataset = 'ycbv'

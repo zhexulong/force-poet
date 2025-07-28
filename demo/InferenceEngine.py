@@ -61,6 +61,7 @@ class InferenceEngine:
         self.model.load_state_dict(self.checkpoint['model'], strict=False)
 
         self.results: dict = {}
+        self.last_outputs = None  # Store last model outputs for force matrix access
 
         self.draw = draw
 
@@ -115,7 +116,7 @@ class InferenceEngine:
 
         return [x1_pixel, y1_pixel, x2_pixel, y2_pixel]
 
-    def inference(self, frame_orig: Image, gt: Pose, frame_number: int, verbose: bool = True):
+    def inference(self, frame_orig: Image, gt: Pose, frame_number: int, targets=None, verbose: bool = True):
         r"""
         Args:
           frame_orig (np.ndarray): List of images to do inference on.
@@ -144,8 +145,10 @@ class InferenceEngine:
         # outputs['pred_translation'] -> (bd, n_queries, 3);
         # outputs['pred_rotation']    -> (bs, n_queries, 3, 3)
         # outputs['pred_boxes']       -> (bs, n_queries, 4) -> (cx, cy, w, h) normalized
+        # outputs['pred_force_matrix'] -> (bs, n_queries, n_queries, 3) if force prediction enabled
         start_ = time.time()
-        outputs, n_boxes_per_sample = self.model(frame, None)
+        outputs, n_boxes_per_sample = self.model(frame, targets)
+        self.last_outputs = outputs  # Store outputs for force matrix access
         poet_time = time.time() - start_
 
         frame_str = str(f"frame{frame_number}")
@@ -177,8 +180,9 @@ class InferenceEngine:
             pred_class = int(outputs['pred_classes'][0][d].detach().cpu())
 
             #########################
-            # TODO: Refactor object!!
-            R, t = self.transform_to_cam(pred_rot, pred_t, "doll")
+            # Fixed: Use model's direct output without unnecessary inverse transformation
+            # Model already learns cam_R_m2c and cam_t_m2c during training
+            R, t = pred_rot, pred_t
 
             img = None
             if self.draw:
@@ -199,6 +203,11 @@ class InferenceEngine:
                 "class": pred_class,
                 "img": img,
             }
+            
+            # Add force matrix information if available
+            if self.last_outputs and 'pred_force_matrix' in self.last_outputs:
+                force_matrix = self.last_outputs['pred_force_matrix'][0][d].detach().cpu().numpy()
+                result[d]["force_matrix"] = force_matrix
 
         if not result: return None, time.time() - start_, poet_time, None, None
 

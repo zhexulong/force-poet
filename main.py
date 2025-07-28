@@ -53,7 +53,7 @@ def get_args_parser():
     parser.add_argument('--epochs', default=50, type=int)
     parser.add_argument('--lr_drop', default=100, type=int)
     parser.add_argument('--gamma', default=0.1, type=float)
-    parser.add_argument('--clip_max_norm', default=0.1, type=float,
+    parser.add_argument('--clip_max_norm', default=5.0, type=float,
                         help='gradient clipping max norm')
 
     # * Backbone
@@ -115,6 +115,18 @@ def get_args_parser():
                         help="Number of query slots")
     parser.add_argument('--dec_n_points', default=4, type=int)
     parser.add_argument('--enc_n_points', default=4, type=int)
+    
+    # * Graph Transformer and Force Prediction
+    parser.add_argument('--use_graph_transformer', action='store_true', default=True,
+                        help="Whether to use graph transformer for force prediction")
+    parser.add_argument('--graph_hidden_dim', default=None, type=int,
+                        help="Hidden dimension for graph transformer (default: same as hidden_dim)")
+    parser.add_argument('--graph_num_layers', default=2, type=int,
+                        help="Number of layers in graph transformer")
+    parser.add_argument('--graph_num_heads', default=8, type=int,
+                        help="Number of attention heads in graph transformer")
+    parser.add_argument('--use_force_prediction', action='store_true', default=True,
+                        help="Whether to predict forces")
 
     # * Matcher
     parser.add_argument('--matcher_type', default='pose', choices=['pose'], type=str)
@@ -131,7 +143,14 @@ def get_args_parser():
     # * Loss coefficients
     # Pose Estimation losses
     parser.add_argument('--translation_loss_coef', default=1, type=float, help='Loss weighing parameter for the translation')
-    parser.add_argument('--rotation_loss_coef', default=1, type=float, help='Loss weighing parameter for the rotation')
+    parser.add_argument('--rotation_loss_coef', default=2.0, type=float, help='Loss weighing parameter for the rotation')
+    parser.add_argument('--force_loss_coef', default=2.0, type=float, help='Loss weighing parameter for the force prediction')
+    parser.add_argument('--force_symmetry_coef', default=1.0, type=float, help='Loss weighing parameter for force symmetry constraint (Newton\'s 3rd law)')
+    parser.add_argument('--force_consistency_coef', default=1.0, type=float, help='Loss weighing parameter for force consistency constraint (Newton\'s 1st law)')
+    parser.add_argument('--hard_negative_ratio', default=0.2, type=float, 
+                        help='Ratio of hard negative samples to keep for improved force loss training (0.1-1.0)')
+    parser.add_argument('--force_scale_factor', default=100.0, type=float,
+                        help='Scaling factor for force values during training to improve numerical stability (default: 100.0)')
 
     # dataset parameters
     parser.add_argument('--dataset', default='ycbv', type=str, choices=('ycbv', 'lmo', 'icmi', 'custom'),
@@ -215,9 +234,13 @@ def test(pose_evaluator, model, matcher, args, device, output_dir: Path, epoch: 
                                       drop_last=False, collate_fn=utils.collate_fn, num_workers=args.num_workers,
                                       pin_memory=True)
 
-        avg_trans_err, avg_rot_err = pose_evaluate(model, matcher, pose_evaluator, data_loader_test, args.test_set,
+        eval_results = pose_evaluate(model, matcher, pose_evaluator, data_loader_test, args.test_set,
                                                    args.bbox_mode,
                                                    args.rotation_representation, device, str(output_dir), args, epoch)
+        
+        # Extract the main metrics for backward compatibility
+        avg_trans_err = eval_results['avg_trans']
+        avg_rot_err = eval_results['avg_rot']
 
         test_total_time = time.time() - test_start_time
         test_total_time_str = str(datetime.timedelta(seconds=int(test_total_time)))
@@ -355,7 +378,13 @@ def main(args):
       ["LR. Drop", str(args.lr_drop), "Decays learning rate all 'LR. Drop' epochs by multiplicative of 'Gamma'"],
       ["Gamma", str(args.gamma), "Multiplicative factor of learning rate drop"],
       ["Transl. Loss Coef.", str(args.translation_loss_coef), "Weighting of translation loss."],
-      ["Rot. Loss Coef.", str(args.rotation_loss_coef)],
+      ["Rot. Loss Coef.", str(args.rotation_loss_coef), "Weighting of rotation loss."],
+      ["Force Loss Coef.", str(args.force_loss_coef), "Weighting of force prediction loss."],
+      ["Force Symmetry Coef.", str(args.force_symmetry_coef), "Weighting of force symmetry constraint (Newton's 3rd law)."],
+      ["Force Consistency Coef.", str(args.force_consistency_coef), "Weighting of force consistency constraint (Newton's 1st law)."],
+      ["Hard Negative Ratio", str(args.hard_negative_ratio), "Ratio of hard negative samples for improved force loss training."],
+      ["Use Force Prediction", str(args.use_force_prediction), "Whether to enable force prediction."],
+      ["Use Graph Transformer", str(args.use_graph_transformer), "Whether to use graph transformer for force prediction."],
       ["", ""],
       ["Eval", ""],
       ["Eval Batch Size", str(args.eval_batch_size)],
@@ -390,7 +419,22 @@ def main(args):
                 args.resume, map_location='cpu', check_hash=True)
         else:
             checkpoint = torch.load(args.resume, map_location='cpu')
-        missing_keys, unexpected_keys = model_without_ddp.load_state_dict(checkpoint['model'], strict=False)
+        
+        # Filter out force_matrix_head parameters to allow normal initialization
+        filtered_state_dict = {}
+        force_matrix_keys = []
+        for key, value in checkpoint['model'].items():
+            if 'force_matrix_head' in key:
+                force_matrix_keys.append(key)
+                print(f"Skipping force_matrix_head parameter: {key}")
+            else:
+                filtered_state_dict[key] = value
+        
+        if force_matrix_keys:
+            print(f"Excluded {len(force_matrix_keys)} force_matrix_head parameters from checkpoint loading.")
+            print("force_matrix_head will use normal initialization.")
+        
+        missing_keys, unexpected_keys = model_without_ddp.load_state_dict(filtered_state_dict, strict=False)
         unexpected_keys = [k for k in unexpected_keys if not (k.endswith('total_params') or k.endswith('total_ops'))]
         if len(missing_keys) > 0:
             warn(f"There are {len(missing_keys)} missing keys in state_dict!")
@@ -401,12 +445,29 @@ def main(args):
         if not args.eval and 'optimizer' in checkpoint and 'lr_scheduler' in checkpoint and 'epoch' in checkpoint:
             import copy
             p_groups = copy.deepcopy(optimizer.param_groups)
-            optimizer.load_state_dict(checkpoint['optimizer'])
-            for pg, pg_old in zip(optimizer.param_groups, p_groups):
-                pg['lr'] = pg_old['lr']
-                pg['initial_lr'] = pg_old['initial_lr']
-            # print(optimizer.param_groups)
-            lr_scheduler.load_state_dict(checkpoint['lr_scheduler'])
+            try:
+                optimizer.load_state_dict(checkpoint['optimizer'])
+                for pg, pg_old in zip(optimizer.param_groups, p_groups):
+                    pg['lr'] = pg_old['lr']
+                    pg['initial_lr'] = pg_old['initial_lr']
+                # print(optimizer.param_groups)
+                lr_scheduler.load_state_dict(checkpoint['lr_scheduler'])
+                print("Successfully loaded optimizer and lr_scheduler from checkpoint.")
+            except ValueError as e:
+                if "doesn't match the size of optimizer's group" in str(e):
+                    print(f"Warning: Cannot load optimizer state due to parameter size mismatch: {e}")
+                    print("This is expected when force_matrix_head parameters are excluded from loading.")
+                    print("Optimizer will use fresh initialization with current learning rate settings.")
+                    # Still try to load lr_scheduler if possible
+                    try:
+                        lr_scheduler.load_state_dict(checkpoint['lr_scheduler'])
+                        print("Successfully loaded lr_scheduler from checkpoint.")
+                    except Exception as lr_e:
+                        print(f"Warning: Cannot load lr_scheduler: {lr_e}")
+                        print("lr_scheduler will use fresh initialization.")
+                else:
+                    # Re-raise if it's a different error
+                    raise e
 
             # Fallback if gamma was an array previously
             if isinstance(lr_scheduler.gamma, list):
@@ -505,8 +566,12 @@ def main(args):
 
                 # Do evaluation on the validation set every n epochs
                 if epoch % args.eval_interval == 0:
-                    avg_trans_err, avg_rot_err = pose_evaluate(model, matcher, pose_evaluator, data_loader_val, args.eval_set, args.bbox_mode,
+                    eval_results = pose_evaluate(model, matcher, pose_evaluator, data_loader_val, args.eval_set, args.bbox_mode,
                                   args.rotation_representation, device, str(output_dir), None, epoch)
+                    
+                    # Extract the main metrics for backward compatibility
+                    avg_trans_err = eval_results['avg_trans']
+                    avg_rot_err = eval_results['avg_rot']
 
                     # Save model if best translation and rotation result
                     if args.output_dir:
@@ -540,10 +605,14 @@ def main(args):
             # New iteration-based evaluation
             def eval_func_wrapper():
                 """评估函数包装器"""
-                avg_trans_err, avg_rot_err = pose_evaluate(
+                eval_results = pose_evaluate(
                     model, matcher, pose_evaluator, data_loader_val, args.eval_set, 
                     args.bbox_mode, args.rotation_representation, device, str(output_dir), None, None
                 )
+                
+                # Extract the main metrics
+                avg_trans_err = eval_results['avg_trans']
+                avg_rot_err = eval_results['avg_rot']
                 
                 # Save model if best translation and rotation result
                 nonlocal best_loss

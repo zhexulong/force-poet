@@ -65,6 +65,12 @@ def crop(image, target, region):
 
         for field in fields:
             target[field] = target[field][keep]
+        
+        # Handle masses and forces fields
+        if "masses" in target:
+            target["masses"] = target["masses"][keep]
+        if "forces" in target:
+            target["forces"] = [target["forces"][i] for i in range(len(target["forces"])) if keep[i]]
 
     return cropped_image, target
 
