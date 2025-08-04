@@ -12,19 +12,19 @@ source /opt/anaconda3/etc/profile.d/conda.sh
 conda activate poet_isaac
 
 # Set CUDA device (modify as needed)
-export CUDA_VISIBLE_DEVICES=3
+export CUDA_VISIBLE_DEVICES=2
 
 # Training parameters
 CONFIG_FILE="configs/isaac_sim.yaml"
 OUTPUT_DIR="./results/isaac_sim_training"
-DATASET_PATH="../isaac_sim_poet_dataset_force"
+DATASET_PATH="../isaac_sim_poet_dataset_force_new"
 
 # Create output directory
 mkdir -p $OUTPUT_DIR
 
 # Set checkpoint path for resuming training
 # Note: Update this path to point to your actual checkpoint file
-CHECKPOINT_PATH="./results/isaac_sim_training/2025-07-31_15:41:45/checkpoint0049.pth"
+CHECKPOINT_PATH="./results/isaac_sim_training/2025-07-27_22:19:14/checkpoint0019.pth"
 
 # Check if checkpoint exists, if not, look for alternatives
 if [ ! -f "$CHECKPOINT_PATH" ]; then
@@ -50,7 +50,7 @@ if [ ! -f "$CHECKPOINT_PATH" ]; then
 fi
 
 # Run training with force matrix prediction (resume from checkpoint if available)
-CUDA_VISIBLE_DEVICES=3 nohup python main.py \
+CUDA_VISIBLE_DEVICES=2 nohup python main.py \
     --dataset custom \
     --dataset_path $DATASET_PATH \
     --output_dir $OUTPUT_DIR \
@@ -59,7 +59,7 @@ CUDA_VISIBLE_DEVICES=3 nohup python main.py \
     --lr_drop 95 \
     --lr_backbone 1e-6 \
     --batch_size 16 \
-    --epochs 100 \
+    --epochs 50 \
     --rgb_augmentation \
     --bbox_mode gt \
     --jitter_probability 0.5 \
@@ -72,22 +72,12 @@ CUDA_VISIBLE_DEVICES=3 nohup python main.py \
     --dec_layers 5 \
     --translation_loss_coef 5 \
     --rotation_loss_coef 3 \
-    --force_loss_coef 2.0 \
-    --force_symmetry_coef 0.0 \
-    --force_consistency_coef 1.0 \
-    --force_scale_factor 5.0 \
-    --use_force_prediction \
-    --use_graph_transformer \
-    --graph_hidden_dim 256 \
-    --graph_num_layers 4 \
-    --graph_num_heads 8 \
     --eval_interval 1 \
     --eval_by_epoch \
     --save_interval 5 \
     --device cuda \
-    $([ -n "$CHECKPOINT_PATH" ] && echo "--resume $CHECKPOINT_PATH") \
     --class_info /annotations/classes.json \
-    --model_symmetry /annotations/isaac_sim_symmetries.json > train_rcnn_change_loss_2.log 2>&1 &
+    --model_symmetry /annotations/isaac_sim_symmetries.json > train_rcnn_backbone.log 2>&1 &
 
 echo "Training completed!"
 echo "Results saved to: $OUTPUT_DIR"

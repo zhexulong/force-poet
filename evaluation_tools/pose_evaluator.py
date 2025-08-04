@@ -12,11 +12,22 @@ import os
 import shutil
 import copy
 import json
-
-from scipy import spatial
 import numpy as np
+from scipy import spatial
 from scipy.linalg import logm
 import numpy.linalg as LA
+
+
+class NumpyEncoder(json.JSONEncoder):
+    """ Special json encoder for numpy types """
+    def default(self, obj):
+        if isinstance(obj, np.integer):
+            return int(obj)
+        if isinstance(obj, np.floating):
+            return float(obj)
+        if isinstance(obj, np.ndarray):
+            return obj.tolist()
+        return super(NumpyEncoder, self).default(obj)
 
 
 class PoseEvaluator(object):
@@ -55,6 +66,11 @@ class PoseEvaluator(object):
         self.force_matrices_gt = {}
         self.force_matrix_errors = {}
         
+        # Add contact classification evaluation storage
+        self.contact_matrices_pred = {}
+        self.contact_matrices_gt = {}
+        self.contact_classification_errors = {}
+        
         self.depth_scale = depth_scale
 
         self.reset()  # Initialize
@@ -82,6 +98,11 @@ class PoseEvaluator(object):
         self.force_matrices_pred = {}
         self.force_matrices_gt = {}
         self.force_matrix_errors = {}
+        
+        # Reset contact classification evaluation storage
+        self.contact_matrices_pred = {}
+        self.contact_matrices_gt = {}
+        self.contact_classification_errors = {}
 
         for cls in self.classes:
             self.num[cls] = 0.
@@ -98,6 +119,11 @@ class PoseEvaluator(object):
             # Initialize force matrix storage for each class
             self.force_matrices_pred[cls] = []
             self.force_matrices_gt[cls] = []
+            
+            # Initialize contact classification storage for each class
+            self.contact_matrices_pred[cls] = []
+            self.contact_matrices_gt[cls] = []
+            self.contact_classification_errors[cls] = []
             self.force_matrix_errors[cls] = []
 
     def evaluate_pose_adds(self, output_path):
@@ -249,7 +275,7 @@ class PoseEvaluator(object):
 
         log_file.write("\n")
         log_file.close()
-        json.dump(adds_results, json_file)
+        json.dump(adds_results, json_file, cls=NumpyEncoder)
         json_file.close()
         return
 
@@ -395,7 +421,7 @@ class PoseEvaluator(object):
 
         log_file.write("\n")
         log_file.close()
-        json.dump(adi_results, json_file)
+        json.dump(adi_results, json_file, cls=NumpyEncoder)
         json_file.close()
         return
 
@@ -543,7 +569,7 @@ class PoseEvaluator(object):
 
         log_file.write("\n")
         log_file.close()
-        json.dump(add_results, json_file)
+        json.dump(add_results, json_file, cls=NumpyEncoder)
         json_file.close()
         return
 
@@ -596,7 +622,7 @@ class PoseEvaluator(object):
 
         log_file.write("\n")
         log_file.close()
-        json.dump(avg_translation_errors, json_file)
+        json.dump(avg_translation_errors, json_file, cls=NumpyEncoder)
         json_file.close()
         return total_avg_error
 
@@ -658,7 +684,7 @@ class PoseEvaluator(object):
 
         log_file.write("\n")
         log_file.close()
-        json.dump(avg_rotation_errors, json_file)
+        json.dump(avg_rotation_errors, json_file, cls=NumpyEncoder)
         json_file.close()
         return total_avg_error
 
@@ -889,7 +915,7 @@ class PoseEvaluator(object):
 
         log_file.write("\n")
         log_file.close()
-        json.dump(evaluation_results, json_file, indent=2)
+        json.dump(evaluation_results, json_file, indent=2, cls=NumpyEncoder)
         json_file.close()
         
         return total_mae, total_rmse
@@ -947,11 +973,16 @@ class PoseEvaluator(object):
 
         log_file.write("\n")
         log_file.close()
-        json.dump(avg_force_errors, json_file, indent=2)
+        json.dump(avg_force_errors, json_file, indent=2, cls=NumpyEncoder)
         json_file.close()
         return total_avg_error
 
     def evaluate_force_matrix_prediction(self, output_path, epoch=None):
+        for cls in self.classes:
+            if len(self.force_matrices_pred[cls]) > 0:
+                pred_forces = np.concatenate([m.flatten() for m in self.force_matrices_pred[cls]])
+            if len(self.force_matrices_gt[cls]) > 0:
+                gt_forces = np.concatenate([m.flatten() for m in self.force_matrices_gt[cls]])
         """
         Evaluate force matrix prediction with detailed metrics including:
         - Force vector MSE and MAE
@@ -1044,9 +1075,19 @@ class PoseEvaluator(object):
                 false_positives = np.sum(~force_exists_mask & pred_exists_mask)
                 false_negatives = np.sum(force_exists_mask & ~pred_exists_mask)
                 
+                # Debug: Print force magnitude distributions and detection results
+                print(f"DEBUG Force Matrix Evaluation:")
+                print(f"  gt_norms - max: {gt_norms.max():.6f}, min: {gt_norms.min():.6f}, mean: {gt_norms.mean():.6f}")
+                print(f"  pred_norms - max: {pred_norms.max():.6f}, min: {pred_norms.min():.6f}, mean: {pred_norms.mean():.6f}")
+                print(f"  force_exists_mask sum: {force_exists_mask.sum()}")
+                print(f"  pred_exists_mask sum: {pred_exists_mask.sum()}")
+                print(f"  true_positives: {true_positives}, false_positives: {false_positives}, false_negatives: {false_negatives}")
+                
                 precision = true_positives / (true_positives + false_positives + 1e-8)
                 recall = true_positives / (true_positives + false_negatives + 1e-8)
                 f1_score = 2 * precision * recall / (precision + recall + 1e-8)
+                
+                print(f"  precision: {precision:.6f}, recall: {recall:.6f}, f1_score: {f1_score:.6f}")
                 
                 cls_precisions.append(precision)
                 cls_recalls.append(recall)
@@ -1138,7 +1179,225 @@ class PoseEvaluator(object):
 
         log_file.write("\n")
         log_file.close()
-        json.dump(evaluation_results, json_file, indent=2)
+        json.dump(evaluation_results, json_file, indent=2, cls=NumpyEncoder)
+        json_file.close()
+        
+        return evaluation_results
+    
+    def evaluate_conditional_force_regression(self, output_path, epoch=None, contact_threshold=0.01):
+        """
+        Evaluate conditional force regression performance - force prediction given contact classification
+        
+        Args:
+            output_path: Directory to save evaluation results
+            epoch: Current training epoch (for logging)
+            contact_threshold: Threshold for determining contact vs non-contact
+        
+        Returns:
+            Dictionary containing evaluation results
+        """
+        output_dir = output_path + "/conditional_force_regression/"
+        if os.path.exists(output_dir):
+            shutil.rmtree(output_dir)
+        os.makedirs(output_dir)
+
+        log_file = open(output_path + "/conditional_force_regression/conditional_force_regression.log", 'w')
+        json_file = open(output_path + "/conditional_force_regression/conditional_force_regression.json", 'w')
+
+        log_file.write('\n* {} *\n {:^}\n* {} *'.format('-' * 100, 'Conditional Force Regression Evaluation', '-' * 100))
+        log_file.write("\n")
+
+        force_matrices_pred = copy.deepcopy(self.force_matrices_pred)
+        force_matrices_gt = copy.deepcopy(self.force_matrices_gt)
+        contact_matrices_pred = copy.deepcopy(self.contact_matrices_pred)
+        contact_matrices_gt = copy.deepcopy(self.contact_matrices_gt)
+        
+        evaluation_results = {}
+        all_contact_mse = []
+        all_contact_mae = []
+        all_noncontact_mse = []
+        all_noncontact_mae = []
+        all_overall_mse = []
+        all_overall_mae = []
+        
+        for cls in self.classes:
+            cls_force_pred = force_matrices_pred[cls]
+            cls_force_gt = force_matrices_gt[cls]
+            cls_contact_pred = contact_matrices_pred[cls]
+            cls_contact_gt = contact_matrices_gt[cls]
+            
+            if len(cls_force_pred) == 0 or len(cls_force_gt) == 0:
+                log_file.write("Class: {} - No data available\n".format(cls))
+                continue
+            
+            cls_contact_mse = []
+            cls_contact_mae = []
+            cls_noncontact_mse = []
+            cls_noncontact_mae = []
+            cls_overall_mse = []
+            cls_overall_mae = []
+            
+            # Evaluate each force matrix pair
+            for force_pred, force_gt, contact_pred_logits, contact_gt in zip(
+                cls_force_pred, cls_force_gt, cls_contact_pred, cls_contact_gt):
+                
+                # force_pred: [N, N, 3] - predicted force vectors
+                # force_gt: [N, N, 3] - ground truth force vectors
+                # contact_pred_logits: [N, N, 1] - predicted contact logits
+                # contact_gt: [N, N] - ground truth contact binary labels
+                
+                import torch
+                
+                # Convert contact logits to probabilities and then to binary predictions
+                contact_pred_probs = torch.sigmoid(torch.tensor(contact_pred_logits)).squeeze(-1).numpy()  # [N, N]
+                contact_pred_binary = (contact_pred_probs > 0.5).astype(bool)  # [N, N]
+                contact_gt_binary = contact_gt.astype(bool)  # [N, N]
+                
+                # Calculate force errors
+                force_diff = force_pred - force_gt  # [N, N, 3]
+                force_mse_per_pair = np.mean(force_diff ** 2, axis=-1)  # [N, N] - MSE per contact pair
+                force_mae_per_pair = np.mean(np.abs(force_diff), axis=-1)  # [N, N] - MAE per contact pair
+                
+                # Separate evaluation for contact vs non-contact regions
+                # Using ground truth contact labels for fair evaluation
+                contact_mask = contact_gt_binary
+                noncontact_mask = ~contact_gt_binary
+                
+                # Contact region evaluation
+                if np.any(contact_mask):
+                    contact_mse = np.mean(force_mse_per_pair[contact_mask])
+                    contact_mae = np.mean(force_mae_per_pair[contact_mask])
+                    cls_contact_mse.append(contact_mse)
+                    cls_contact_mae.append(contact_mae)
+                
+                # Non-contact region evaluation
+                if np.any(noncontact_mask):
+                    noncontact_mse = np.mean(force_mse_per_pair[noncontact_mask])
+                    noncontact_mae = np.mean(force_mae_per_pair[noncontact_mask])
+                    cls_noncontact_mse.append(noncontact_mse)
+                    cls_noncontact_mae.append(noncontact_mae)
+                
+                # Overall evaluation
+                overall_mse = np.mean(force_mse_per_pair)
+                overall_mae = np.mean(force_mae_per_pair)
+                cls_overall_mse.append(overall_mse)
+                cls_overall_mae.append(overall_mae)
+            
+            # Calculate class-level metrics
+            cls_contact_mse_avg = np.mean(cls_contact_mse) if cls_contact_mse else np.nan
+            cls_contact_mae_avg = np.mean(cls_contact_mae) if cls_contact_mae else np.nan
+            cls_noncontact_mse_avg = np.mean(cls_noncontact_mse) if cls_noncontact_mse else np.nan
+            cls_noncontact_mae_avg = np.mean(cls_noncontact_mae) if cls_noncontact_mae else np.nan
+            cls_overall_mse_avg = np.mean(cls_overall_mse) if cls_overall_mse else np.nan
+            cls_overall_mae_avg = np.mean(cls_overall_mae) if cls_overall_mae else np.nan
+            
+            # Log class results
+            log_file.write("Class: {} \n".format(cls))
+            log_file.write("  Contact Region MSE: {:.6f} \n".format(cls_contact_mse_avg))
+            log_file.write("  Contact Region MAE: {:.6f} \n".format(cls_contact_mae_avg))
+            log_file.write("  Non-Contact Region MSE: {:.6f} \n".format(cls_noncontact_mse_avg))
+            log_file.write("  Non-Contact Region MAE: {:.6f} \n".format(cls_noncontact_mae_avg))
+            log_file.write("  Overall MSE: {:.6f} \n".format(cls_overall_mse_avg))
+            log_file.write("  Overall MAE: {:.6f} \n".format(cls_overall_mae_avg))
+            log_file.write("  Contact Samples: {} \n".format(len(cls_contact_mse)))
+            log_file.write("  Non-Contact Samples: {} \n".format(len(cls_noncontact_mse)))
+            log_file.write("\n")
+            
+            # Store results
+            evaluation_results[cls] = {
+                'contact_mse': cls_contact_mse_avg,
+                'contact_mae': cls_contact_mae_avg,
+                'noncontact_mse': cls_noncontact_mse_avg,
+                'noncontact_mae': cls_noncontact_mae_avg,
+                'overall_mse': cls_overall_mse_avg,
+                'overall_mae': cls_overall_mae_avg,
+                'contact_samples': len(cls_contact_mse),
+                'noncontact_samples': len(cls_noncontact_mse),
+                'total_samples': len(cls_overall_mse)
+            }
+            
+            # Collect for overall metrics
+            if not np.isnan(cls_contact_mse_avg):
+                all_contact_mse.append(cls_contact_mse_avg)
+            if not np.isnan(cls_contact_mae_avg):
+                all_contact_mae.append(cls_contact_mae_avg)
+            if not np.isnan(cls_noncontact_mse_avg):
+                all_noncontact_mse.append(cls_noncontact_mse_avg)
+            if not np.isnan(cls_noncontact_mae_avg):
+                all_noncontact_mae.append(cls_noncontact_mae_avg)
+            if not np.isnan(cls_overall_mse_avg):
+                all_overall_mse.append(cls_overall_mse_avg)
+            if not np.isnan(cls_overall_mae_avg):
+                all_overall_mae.append(cls_overall_mae_avg)
+            
+            # Log to TensorBoard if available
+            if self.writer is not None and self.training == True:
+                if not self.testing:
+                    self.writer.add_scalar(f'ValClassCondForce/contact_mse/{cls}', cls_contact_mse_avg, epoch)
+                    self.writer.add_scalar(f'ValClassCondForce/contact_mae/{cls}', cls_contact_mae_avg, epoch)
+                    self.writer.add_scalar(f'ValClassCondForce/noncontact_mse/{cls}', cls_noncontact_mse_avg, epoch)
+                    self.writer.add_scalar(f'ValClassCondForce/noncontact_mae/{cls}', cls_noncontact_mae_avg, epoch)
+                    self.writer.add_scalar(f'ValClassCondForce/overall_mse/{cls}', cls_overall_mse_avg, epoch)
+                    self.writer.add_scalar(f'ValClassCondForce/overall_mae/{cls}', cls_overall_mae_avg, epoch)
+                else:
+                    self.writer.add_scalar(f"TestClassCondForce/contact_mse/{cls}", cls_contact_mse_avg)
+                    self.writer.add_scalar(f"TestClassCondForce/contact_mae/{cls}", cls_contact_mae_avg)
+                    self.writer.add_scalar(f"TestClassCondForce/noncontact_mse/{cls}", cls_noncontact_mse_avg)
+                    self.writer.add_scalar(f"TestClassCondForce/noncontact_mae/{cls}", cls_noncontact_mae_avg)
+                    self.writer.add_scalar(f"TestClassCondForce/overall_mse/{cls}", cls_overall_mse_avg)
+                    self.writer.add_scalar(f"TestClassCondForce/overall_mae/{cls}", cls_overall_mae_avg)
+        
+        # Calculate overall metrics
+        overall_contact_mse = np.mean(all_contact_mse) if all_contact_mse else np.nan
+        overall_contact_mae = np.mean(all_contact_mae) if all_contact_mae else np.nan
+        overall_noncontact_mse = np.mean(all_noncontact_mse) if all_noncontact_mse else np.nan
+        overall_noncontact_mae = np.mean(all_noncontact_mae) if all_noncontact_mae else np.nan
+        overall_overall_mse = np.mean(all_overall_mse) if all_overall_mse else np.nan
+        overall_overall_mae = np.mean(all_overall_mae) if all_overall_mae else np.nan
+        
+        # Log overall results
+        log_file.write("\n" + "=" * 50 + "\n")
+        log_file.write("OVERALL RESULTS:\n")
+        log_file.write("  Overall Contact MSE: {:.6f}\n".format(overall_contact_mse))
+        log_file.write("  Overall Contact MAE: {:.6f}\n".format(overall_contact_mae))
+        log_file.write("  Overall Non-Contact MSE: {:.6f}\n".format(overall_noncontact_mse))
+        log_file.write("  Overall Non-Contact MAE: {:.6f}\n".format(overall_noncontact_mae))
+        log_file.write("  Overall MSE: {:.6f}\n".format(overall_overall_mse))
+        log_file.write("  Overall MAE: {:.6f}\n".format(overall_overall_mae))
+        
+        # Store overall results
+        evaluation_results['overall'] = {
+            'contact_mse': overall_contact_mse,
+            'contact_mae': overall_contact_mae,
+            'noncontact_mse': overall_noncontact_mse,
+            'noncontact_mae': overall_noncontact_mae,
+            'overall_mse': overall_overall_mse,
+            'overall_mae': overall_overall_mae,
+            'contact_classes': len(all_contact_mse),
+            'noncontact_classes': len(all_noncontact_mse),
+            'total_classes': len(all_overall_mse)
+        }
+        
+        # Log overall to TensorBoard
+        if self.writer is not None and self.training == True:
+            if not self.testing:
+                self.writer.add_scalar('ValOverallCondForce/contact_mse', overall_contact_mse, epoch)
+                self.writer.add_scalar('ValOverallCondForce/contact_mae', overall_contact_mae, epoch)
+                self.writer.add_scalar('ValOverallCondForce/noncontact_mse', overall_noncontact_mse, epoch)
+                self.writer.add_scalar('ValOverallCondForce/noncontact_mae', overall_noncontact_mae, epoch)
+                self.writer.add_scalar('ValOverallCondForce/overall_mse', overall_overall_mse, epoch)
+                self.writer.add_scalar('ValOverallCondForce/overall_mae', overall_overall_mae, epoch)
+            else:
+                self.writer.add_scalar("TestOverallCondForce/contact_mse", overall_contact_mse)
+                self.writer.add_scalar("TestOverallCondForce/contact_mae", overall_contact_mae)
+                self.writer.add_scalar("TestOverallCondForce/noncontact_mse", overall_noncontact_mse)
+                self.writer.add_scalar("TestOverallCondForce/noncontact_mae", overall_noncontact_mae)
+                self.writer.add_scalar("TestOverallCondForce/overall_mse", overall_overall_mse)
+                self.writer.add_scalar("TestOverallCondForce/overall_mae", overall_overall_mae)
+        
+        log_file.write("\n")
+        log_file.close()
+        json.dump(evaluation_results, json_file, indent=2, cls=NumpyEncoder)
         json_file.close()
         
         return evaluation_results
@@ -1196,9 +1455,202 @@ class PoseEvaluator(object):
 
         log_file.write("\n")
         log_file.close()
-        json.dump(avg_force_matrix_errors, json_file, indent=2)
+        json.dump(avg_force_matrix_errors, json_file, indent=2, cls=NumpyEncoder)
         json_file.close()
         return total_avg_error
+    
+    def evaluate_contact_classification(self, output_path, epoch=None, contact_threshold=0.001):
+        """
+        Evaluate contact classification performance with detailed metrics
+        
+        Args:
+            output_path: Directory to save evaluation results
+            epoch: Current training epoch (for logging)
+            contact_threshold: Threshold for determining contact vs non-contact
+        
+        Returns:
+            Dictionary containing evaluation results
+        """
+        output_dir = output_path + "/contact_classification/"
+        if os.path.exists(output_dir):
+            shutil.rmtree(output_dir)
+        os.makedirs(output_dir)
+
+        log_file = open(output_path + "/contact_classification/contact_classification.log", 'w')
+        json_file = open(output_path + "/contact_classification/contact_classification.json", 'w')
+
+        log_file.write('\n* {} *\n {:^}\n* {} *'.format('-' * 100, 'Contact Classification Evaluation', '-' * 100))
+        log_file.write("\n")
+
+        contact_matrices_pred = copy.deepcopy(self.contact_matrices_pred)
+        contact_matrices_gt = copy.deepcopy(self.contact_matrices_gt)
+        
+        evaluation_results = {}
+        all_accuracies = []
+        all_precisions = []
+        all_recalls = []
+        all_f1_scores = []
+        all_aucs = []
+        
+        for cls in self.classes:
+            cls_matrices_pred = contact_matrices_pred[cls]
+            cls_matrices_gt = contact_matrices_gt[cls]
+            
+            if len(cls_matrices_pred) == 0 or len(cls_matrices_gt) == 0:
+                log_file.write("Class: {} - No data available\n".format(cls))
+                continue
+            
+            cls_accuracies = []
+            cls_precisions = []
+            cls_recalls = []
+            cls_f1_scores = []
+            cls_aucs = []
+            
+            # Evaluate each contact matrix pair
+            for pred_logits, gt_contacts in zip(cls_matrices_pred, cls_matrices_gt):
+                # pred_logits: [N, N, 1] - contact probability logits
+                # gt_contacts: [N, N] - binary contact labels derived from force matrix
+                
+                # Convert logits to probabilities
+                import torch
+                pred_probs = torch.sigmoid(torch.tensor(pred_logits)).squeeze(-1).numpy()  # [N, N]
+                
+                # Flatten for easier computation
+                pred_probs_flat = pred_probs.flatten()
+                gt_contacts_flat = gt_contacts.flatten()
+
+                
+                # Convert probabilities to binary predictions
+                pred_contacts_flat = (pred_probs_flat > 0.5).astype(int)
+                
+                # Calculate metrics
+                accuracy = np.mean(pred_contacts_flat == gt_contacts_flat)
+                
+                # Calculate precision, recall, F1
+                true_positives = np.sum((pred_contacts_flat == 1) & (gt_contacts_flat == 1))
+                false_positives = np.sum((pred_contacts_flat == 1) & (gt_contacts_flat == 0))
+                false_negatives = np.sum((pred_contacts_flat == 0) & (gt_contacts_flat == 1))                
+                precision = true_positives / (true_positives + false_positives + 1e-8)
+                recall = true_positives / (true_positives + false_negatives + 1e-8)
+                f1_score = 2 * precision * recall / (precision + recall + 1e-8)
+                
+                # Calculate AUC if there are both positive and negative samples
+                if len(np.unique(gt_contacts_flat)) > 1:
+                    try:
+                        from sklearn.metrics import roc_auc_score
+                        auc = roc_auc_score(gt_contacts_flat, pred_probs_flat)
+                    except:
+                        auc = 0.5  # Random performance if AUC calculation fails
+                else:
+                    auc = np.nan
+                
+                cls_accuracies.append(accuracy)
+                cls_precisions.append(precision)
+                cls_recalls.append(recall)
+                cls_f1_scores.append(f1_score)
+                if not np.isnan(auc):
+                    cls_aucs.append(auc)
+            
+            # Calculate class-level metrics
+            cls_accuracy = np.mean(cls_accuracies) if cls_accuracies else np.nan
+            cls_precision = np.mean(cls_precisions) if cls_precisions else np.nan
+            cls_recall = np.mean(cls_recalls) if cls_recalls else np.nan
+            cls_f1 = np.mean(cls_f1_scores) if cls_f1_scores else np.nan
+            cls_auc = np.mean(cls_aucs) if cls_aucs else np.nan
+            
+            # Log class results
+            log_file.write("Class: {} \n".format(cls))
+            log_file.write("  Accuracy: {:.6f} \n".format(cls_accuracy))
+            log_file.write("  Precision: {:.6f} \n".format(cls_precision))
+            log_file.write("  Recall: {:.6f} \n".format(cls_recall))
+            log_file.write("  F1 Score: {:.6f} \n".format(cls_f1))
+            log_file.write("  AUC: {:.6f} \n".format(cls_auc))
+            log_file.write("\n")
+            
+            # Store results
+            evaluation_results[cls] = {
+                'accuracy': cls_accuracy,
+                'precision': cls_precision,
+                'recall': cls_recall,
+                'f1_score': cls_f1,
+                'auc': cls_auc,
+                'num_samples': len(cls_accuracies)
+            }
+            
+            # Collect for overall metrics
+            if not np.isnan(cls_accuracy):
+                all_accuracies.append(cls_accuracy)
+            if not np.isnan(cls_precision):
+                all_precisions.append(cls_precision)
+            if not np.isnan(cls_recall):
+                all_recalls.append(cls_recall)
+            if not np.isnan(cls_f1):
+                all_f1_scores.append(cls_f1)
+            if not np.isnan(cls_auc):
+                all_aucs.append(cls_auc)
+            
+            # Log to TensorBoard if available
+            if self.writer is not None and self.training == True:
+                if not self.testing:
+                    self.writer.add_scalar(f'ValClassContact/accuracy/{cls}', cls_accuracy, epoch)
+                    self.writer.add_scalar(f'ValClassContact/precision/{cls}', cls_precision, epoch)
+                    self.writer.add_scalar(f'ValClassContact/recall/{cls}', cls_recall, epoch)
+                    self.writer.add_scalar(f'ValClassContact/f1_score/{cls}', cls_f1, epoch)
+                    self.writer.add_scalar(f'ValClassContact/auc/{cls}', cls_auc, epoch)
+                else:
+                    self.writer.add_scalar(f"TestClassContact/accuracy/{cls}", cls_accuracy)
+                    self.writer.add_scalar(f"TestClassContact/precision/{cls}", cls_precision)
+                    self.writer.add_scalar(f"TestClassContact/recall/{cls}", cls_recall)
+                    self.writer.add_scalar(f"TestClassContact/f1_score/{cls}", cls_f1)
+                    self.writer.add_scalar(f"TestClassContact/auc/{cls}", cls_auc)
+        
+        # Calculate overall metrics
+        overall_accuracy = np.mean(all_accuracies) if all_accuracies else np.nan
+        overall_precision = np.mean(all_precisions) if all_precisions else np.nan
+        overall_recall = np.mean(all_recalls) if all_recalls else np.nan
+        overall_f1 = np.mean(all_f1_scores) if all_f1_scores else np.nan
+        overall_auc = np.mean(all_aucs) if all_aucs else np.nan
+        
+        # Log overall results
+        log_file.write("\n" + "=" * 50 + "\n")
+        log_file.write("OVERALL RESULTS:\n")
+        log_file.write("  Overall Accuracy: {:.6f}\n".format(overall_accuracy))
+        log_file.write("  Overall Precision: {:.6f}\n".format(overall_precision))
+        log_file.write("  Overall Recall: {:.6f}\n".format(overall_recall))
+        log_file.write("  Overall F1 Score: {:.6f}\n".format(overall_f1))
+        log_file.write("  Overall AUC: {:.6f}\n".format(overall_auc))
+        
+        # Store overall results
+        evaluation_results['overall'] = {
+            'accuracy': overall_accuracy,
+            'precision': overall_precision,
+            'recall': overall_recall,
+            'f1_score': overall_f1,
+            'auc': overall_auc,
+            'num_samples': len(all_accuracies)
+        }
+        
+        # Log overall to TensorBoard
+        if self.writer is not None and self.training == True:
+            if not self.testing:
+                self.writer.add_scalar('ValOverallContact/accuracy', overall_accuracy, epoch)
+                self.writer.add_scalar('ValOverallContact/precision', overall_precision, epoch)
+                self.writer.add_scalar('ValOverallContact/recall', overall_recall, epoch)
+                self.writer.add_scalar('ValOverallContact/f1_score', overall_f1, epoch)
+                self.writer.add_scalar('ValOverallContact/auc', overall_auc, epoch)
+            else:
+                self.writer.add_scalar("TestOverallContact/accuracy", overall_accuracy)
+                self.writer.add_scalar("TestOverallContact/precision", overall_precision)
+                self.writer.add_scalar("TestOverallContact/recall", overall_recall)
+                self.writer.add_scalar("TestOverallContact/f1_score", overall_f1)
+                self.writer.add_scalar("TestOverallContact/auc", overall_auc)
+        
+        log_file.write("\n")
+        log_file.close()
+        json.dump(evaluation_results, json_file, indent=2, cls=NumpyEncoder)
+        json_file.close()
+        
+        return evaluation_results
 
 
 

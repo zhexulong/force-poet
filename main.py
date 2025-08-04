@@ -125,7 +125,7 @@ def get_args_parser():
                         help="Number of layers in graph transformer")
     parser.add_argument('--graph_num_heads', default=8, type=int,
                         help="Number of attention heads in graph transformer")
-    parser.add_argument('--use_force_prediction', action='store_true', default=True,
+    parser.add_argument('--use_force_prediction', action='store_true', default=False,
                         help="Whether to predict forces")
 
     # * Matcher
@@ -149,8 +149,8 @@ def get_args_parser():
     parser.add_argument('--force_consistency_coef', default=1.0, type=float, help='Loss weighing parameter for force consistency constraint (Newton\'s 1st law)')
     parser.add_argument('--hard_negative_ratio', default=0.2, type=float, 
                         help='Ratio of hard negative samples to keep for improved force loss training (0.1-1.0)')
-    parser.add_argument('--force_scale_factor', default=100.0, type=float,
-                        help='Scaling factor for force values during training to improve numerical stability (default: 100.0)')
+    parser.add_argument('--force_scale_factor', default=5.0, type=float,
+                        help='Scaling factor for force values during training to improve numerical stability (default: 5.0)')
 
     # dataset parameters
     parser.add_argument('--dataset', default='ycbv', type=str, choices=('ycbv', 'lmo', 'icmi', 'custom'),
@@ -536,6 +536,9 @@ def main(args):
             for epoch in range(args.start_epoch, args.epochs):
                 if args.distributed:
                     sampler_train.set_epoch(epoch)
+                
+                # Set epoch for curriculum learning in criterion
+                criterion.set_epoch(epoch)
 
                 start = time.time()
                 train_stats = train_one_epoch(
@@ -638,6 +641,9 @@ def main(args):
             for epoch in range(args.start_epoch, args.epochs):
                 if args.distributed:
                     sampler_train.set_epoch(epoch)
+                
+                # Set epoch for curriculum learning in criterion
+                criterion.set_epoch(epoch)
 
                 start = time.time()
                 train_stats, global_iteration = train_one_epoch_with_iter_eval(

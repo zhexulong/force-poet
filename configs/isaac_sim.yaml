@@ -5,10 +5,57 @@
 dataset_path: '/data/gplong/force_map_project/w-poet/poet/dataset_files/isaac_sim_annotations'
 synt_background: null  # No synthetic background needed for Isaac Sim data
 
+# MaskRCNN backbone configuration
+anchor_sizes:
+-
+  - 32
+-
+  - 64
+-
+  - 128
+-
+  - 256
+-
+  - 512
+backbone_str: resnet50-fpn
+input_resize:
+- 480
+- 640
+label_to_category_id:
+  background: 0
+  obj_000001: 1
+  obj_000002: 2
+  obj_000003: 3
+  obj_000004: 4
+  obj_000005: 5
+  obj_000006: 6
+  obj_000007: 7
+  obj_000008: 8
+  obj_000009: 9
+  obj_000010: 10
+  obj_000011: 11
+  obj_000012: 12
+  obj_000013: 13
+  obj_000014: 14
+  obj_000015: 15
+  obj_000016: 16
+  obj_000017: 17
+  obj_000018: 18
+  obj_000019: 19
+  obj_000020: 20
+  obj_000021: 21
+
 # Model configuration
 num_classes: 22  # 21 object classes + 1 background
-num_queries: 100
+num_queries: 20
 aux_loss: true
+
+# Graph Transformer and Force Prediction
+use_graph_transformer: true
+use_force_prediction: true
+graph_hidden_dim: 256  # Same as hidden_dim
+graph_num_layers: 4
+graph_num_heads: 4
 
 # Training parameters
 lr: 1e-4
@@ -34,7 +81,7 @@ hidden_dim: 256
 nheads: 8
 enc_layers: 6
 dec_layers: 6
-dim_feedforward: 2048
+dim_feedforward: 1024
 dropout: 0.1
 
 # Loss weights
@@ -44,6 +91,9 @@ bbox_loss_coef: 5
 giou_loss_coef: 2
 eos_coef: 0.1
 pose_loss_coef: 1
+translation_loss_coef: 1
+rotation_loss_coef: 1
+force_loss_coef: 1.0
 
 # Evaluation
 eval_every: 10

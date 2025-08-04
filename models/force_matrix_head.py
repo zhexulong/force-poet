@@ -206,30 +206,72 @@ class GraphTransformerLayerDense(nn.Module):
 class ForceMatrixHead(nn.Module):
     """
     Specialized head for predicting pairwise force matrices between objects.
+    Enhanced with geometric feature injection for better 3D spatial reasoning.
     Inspired by DenseGraphTransformerHead from relation_grasp.
     """
     
     def __init__(self, in_dim=256, hidden_dim=256, num_heads=8, num_layers=2, 
-                 edge_features='sum', dropout=0.1, use_bias=False, mass_embed_dim=None):
+                 edge_features='concat', dropout=0.1, use_bias=False, mass_embed_dim=None,
+                 use_geometric_features=True):
         super().__init__()
         
         self.in_dim = in_dim
         self.hidden_dim = hidden_dim
         self.num_heads = num_heads
         self.num_layers = num_layers
-        self.edge_features = 'concat' # edge_features
+        self.edge_features = edge_features
         self.dropout = dropout
         self.mass_embed_dim = mass_embed_dim
+        self.use_geometric_features = use_geometric_features
         
-        # Edge feature computation
+        # Semantic edge feature computation
         if edge_features == 'concat':
-            out_proj_edge = hidden_dim // 2
+            proj_edge_dim = hidden_dim // 2  # Dimension for each projection
+            semantic_edge_dim = proj_edge_dim * 2  # After concatenation
             self.pairwise_layer = PairwiseConcatLayer()
         else:
-            out_proj_edge = hidden_dim 
+            proj_edge_dim = hidden_dim
+            semantic_edge_dim = hidden_dim 
 
-        self.proj_e1 = nn.Linear(in_dim, out_proj_edge, bias=use_bias)
-        self.proj_e2 = nn.Linear(in_dim, out_proj_edge, bias=use_bias)
+        self.proj_e1 = nn.Linear(in_dim, proj_edge_dim, bias=use_bias)
+        self.proj_e2 = nn.Linear(in_dim, proj_edge_dim, bias=use_bias)
+        
+        # Geometric feature embedder (Project, then Fuse)
+        if self.use_geometric_features:
+            # Geometric features: [relative_pos(3) + relative_pos(3)] = 6 dimensions
+            geometric_feature_dim = hidden_dim // 8
+            self.geometric_embedder = MLP(
+                input_dim=6,  # relative_pos(3) + relative_pos(3)
+                hidden_dim=geometric_feature_dim,
+                output_dim=geometric_feature_dim,
+                num_layers=2
+            )
+        
+        # Mass feature embedder
+        if mass_embed_dim is not None:
+            mass_feature_dim = hidden_dim // 8
+            self.mass_pairwise_embedder = MLP(
+                input_dim=mass_embed_dim * 2,  # Pairwise concatenated mass features
+                hidden_dim=mass_feature_dim,
+                output_dim=mass_feature_dim,
+                num_layers=2
+            )
+        
+        # Feature fusion layer
+        if self.use_geometric_features and mass_embed_dim is not None:
+            # semantic + geometric + mass features
+            fusion_input_dim = semantic_edge_dim + (hidden_dim // 8) + (hidden_dim // 8)
+        elif self.use_geometric_features:
+            # semantic + geometric features
+            fusion_input_dim = semantic_edge_dim + (hidden_dim // 8)
+        elif mass_embed_dim is not None:
+            # semantic + mass features
+            fusion_input_dim = semantic_edge_dim + (hidden_dim // 8)
+        else:
+            # semantic features only
+            fusion_input_dim = semantic_edge_dim
+            
+        self.fusion_layer = nn.Linear(fusion_input_dim, hidden_dim, bias=use_bias)
         
         proj_node_in_dim = in_dim + (mass_embed_dim if mass_embed_dim is not None else 0)
         self.proj_node_input = nn.Linear(proj_node_in_dim, hidden_dim, bias=use_bias)
@@ -256,14 +298,22 @@ class ForceMatrixHead(nn.Module):
             num_layers=3
         )
         
-    def _compute_edge_features(self, features):
+        # Contact classification head
+        self.contact_predictor = MLP(
+            input_dim=hidden_dim,
+            hidden_dim=hidden_dim//2,
+            output_dim=1,  # Contact probability logit
+            num_layers=3
+        )
+        
+    def _compute_semantic_edge_features(self, features):
         """
-        Compute pairwise edge features from node features
+        Compute pairwise semantic edge features from node features
         
         Args:
             features: [B, N, C] - Node features
         Returns:
-            e: [B, N, N, C] - Edge features
+            e: [B, N, N, C] - Semantic edge features
         """
         B, N, C = features.shape
         
@@ -282,34 +332,103 @@ class ForceMatrixHead(nn.Module):
         
         return e
     
-    def forward(self, hs, mass_embeds=None):
+    def _compute_geometric_edge_features(self, pred_translations):
         """
-        Forward pass for force matrix prediction
+        Compute explicit geometric features from predicted translations
+        
+        Args:
+            pred_translations: [B, N, 3] - Predicted 3D positions
+        Returns:
+            geometric_features: [B, N, N, 6] - Pairwise geometric features
+        """
+        B, N, _ = pred_translations.shape
+        
+        # Calculate pairwise relative positions
+        pos_i = pred_translations.unsqueeze(2)  # [B, N, 1, 3]
+        pos_j = pred_translations.unsqueeze(1)  # [B, 1, N, 3]
+        relative_pos_ij = pos_j - pos_i         # [B, N, N, 3] - from i to j
+        relative_pos_ji = pos_i - pos_j         # [B, N, N, 3] - from j to i
+        
+        # Combine both relative positions
+        geometric_features = torch.cat([relative_pos_ij, relative_pos_ji], dim=-1)  # [B, N, N, 6]
+        
+        return geometric_features
+    
+    def forward(self, hs, mass_embeds=None, pred_translations=None, pred_rotations=None):
+        """
+        Forward pass for force matrix and contact prediction with geometric feature injection
         
         Args:
             hs: [B, N, C] - Object features from PoET decoder
             mass_embeds: [B, N, D_mass] - Optional mass embeddings for each node
+            pred_translations: [B, N, 3] - Optional predicted 3D translations for geometric features
+            pred_rotations: [B, N, 6] - Optional predicted rotations (currently unused)
         Returns:
             pred_force_matrix: [B, N, N, 3] - Predicted pairwise force matrix
+            pred_contact_matrix: [B, N, N, 1] - Predicted pairwise contact probabilities
         """
         B, N, C = hs.shape
         
-        # Compute initial edge features
-        e = self._compute_edge_features(hs)
+        # --- START: MODIFICATION - Independent Feature Processing & Fusion ---
         
-        # Concatenate mass embeddings to node features if provided
+        # 1. Process Semantic Features
+        semantic_edge_embedding = self._compute_semantic_edge_features(hs)  # [B, N, N, semantic_edge_dim]
+        
+        feature_embeddings = [semantic_edge_embedding]
+        
+        # 2. Process Geometric Features
+        if self.use_geometric_features and pred_translations is not None:
+            # Calculate pairwise relative position and distance
+            raw_geometric_features = self._compute_geometric_edge_features(pred_translations)  # [B, N, N, 6]
+            
+            # Reshape for MLP processing: [B, N, N, 6] -> [B*N*N, 6]
+            B, N, N_dim, feature_dim = raw_geometric_features.shape
+            raw_geometric_features_flat = raw_geometric_features.view(-1, feature_dim)
+            
+            # Embed the raw geometric features into a well-behaved vector
+            geometric_edge_embedding_flat = self.geometric_embedder(raw_geometric_features_flat)  # [B*N*N, hidden_dim//8]
+            
+            # Reshape back: [B*N*N, hidden_dim//8] -> [B, N, N, hidden_dim//8]
+            geometric_edge_embedding = geometric_edge_embedding_flat.view(B, N, N_dim, -1)
+            feature_embeddings.append(geometric_edge_embedding)
+        
+        # 3. Process Mass Features
+        if mass_embeds is not None and self.mass_embed_dim is not None:
+            # Create pairwise mass embeddings
+            pairwise_mass_embeds = self.pairwise_layer(mass_embeds, mass_embeds)  # [B, N, N, mass_embed_dim*2]
+            
+            # Reshape for MLP processing: [B, N, N, mass_embed_dim*2] -> [B*N*N, mass_embed_dim*2]
+            B, N, N_dim, mass_feature_dim = pairwise_mass_embeds.shape
+            pairwise_mass_embeds_flat = pairwise_mass_embeds.view(-1, mass_feature_dim)
+            
+            # Embed the mass features
+            mass_edge_embedding_flat = self.mass_pairwise_embedder(pairwise_mass_embeds_flat)  # [B*N*N, hidden_dim//8]
+            
+            # Reshape back: [B*N*N, hidden_dim//8] -> [B, N, N, hidden_dim//8]
+            mass_edge_embedding = mass_edge_embedding_flat.view(B, N, N_dim, -1)
+            feature_embeddings.append(mass_edge_embedding)
+        
+        # 4. Fuse all feature embeddings
+        combined_features = torch.cat(feature_embeddings, dim=-1)
+        
+        # Project the fused features into the Graph Transformer's expected dimension
+        e = self.fusion_layer(combined_features)  # This is the final initial edge feature 'e'
+        
+        # --- END: MODIFICATION ---
+        
+        # The rest of the forward pass now uses the rich, fused edge features 'e'
+        # The node features 'h' can be projected as before
         node_features = hs
         if mass_embeds is not None and self.mass_embed_dim is not None:
             node_features = torch.cat([hs, mass_embeds], dim=-1)
-
-        # Project node features to hidden dimension
         h = self.proj_node_input(node_features)
         
         # Apply graph transformer layers
         for layer in self.graph_transformer_layers:
             h, e = layer(h, e)
             
-        # Predict forces from final edge features
+        # Predict forces and contacts from final edge features
         pred_force_matrix = self.force_predictor(e)
+        pred_contact_matrix = self.contact_predictor(e)
         
-        return pred_force_matrix
+        return pred_force_matrix, pred_contact_matrix

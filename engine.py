@@ -50,6 +50,12 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
     metric_logger.add_meter('position_loss', utils.SmoothedValue(window_size=1, fmt='{value:.2f}'))
     metric_logger.add_meter('rotation_loss', utils.SmoothedValue(window_size=1, fmt='{value:.2f}'))
     metric_logger.add_meter('force_loss', utils.SmoothedValue(window_size=1, fmt='{value:.2f}'))
+    # Mixed force loss components
+    metric_logger.add_meter('mixed_force_loss', utils.SmoothedValue(window_size=1, fmt='{value:.2f}'))
+    metric_logger.add_meter('contact_loss', utils.SmoothedValue(window_size=1, fmt='{value:.2f}'))
+    metric_logger.add_meter('force_component_loss', utils.SmoothedValue(window_size=1, fmt='{value:.2f}'))
+    metric_logger.add_meter('contact_weight', utils.SmoothedValue(window_size=1, fmt='{value:.3f}'))
+    metric_logger.add_meter('force_weight', utils.SmoothedValue(window_size=1, fmt='{value:.3f}'))
 
     header = 'Epoch: [{}]'.format(epoch)
     print_freq = 10
@@ -105,6 +111,36 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
         metric_logger.update(rotation_loss=loss_dict_reduced['loss_rot'] * weight_dict['loss_rot'])
         if 'loss_force_matrix' in loss_dict_reduced:
             metric_logger.update(force_loss=loss_dict_reduced['loss_force_matrix'] * weight_dict['loss_force_matrix'])
+        else:
+            # 确保force_loss meter被初始化，即使没有force loss
+            metric_logger.update(force_loss=0.0)
+        
+        # Update mixed force loss components if available
+        if 'loss_mixed_force_contact' in loss_dict_reduced:
+            metric_logger.update(mixed_force_loss=loss_dict_reduced['loss_mixed_force_contact'] * weight_dict.get('loss_mixed_force_contact', 1.0))
+        else:
+            metric_logger.update(mixed_force_loss=0.0)
+            
+        if 'loss_contact_component' in loss_dict_reduced:
+            metric_logger.update(contact_loss=loss_dict_reduced['loss_contact_component'])
+        else:
+            metric_logger.update(contact_loss=0.0)
+            
+        if 'loss_force_component' in loss_dict_reduced:
+            metric_logger.update(force_component_loss=loss_dict_reduced['loss_force_component'])
+        else:
+            metric_logger.update(force_component_loss=0.0)
+            
+        if 'contact_weight' in loss_dict_reduced:
+            metric_logger.update(contact_weight=loss_dict_reduced['contact_weight'])
+        else:
+            metric_logger.update(contact_weight=0.0)
+            
+        if 'force_weight' in loss_dict_reduced:
+            metric_logger.update(force_weight=loss_dict_reduced['force_weight'])
+        else:
+            metric_logger.update(force_weight=0.0)
+            
         metric_logger.update(lr=optimizer.param_groups[0]["lr"])
         metric_logger.update(grad_norm=grad_total_norm)
 
@@ -203,6 +239,19 @@ def train_one_epoch_with_iter_eval(model: torch.nn.Module, criterion: torch.nn.M
         metric_logger.update(rotation_loss=loss_dict_reduced['loss_rot'] * weight_dict['loss_rot'])
         if 'loss_force_matrix' in loss_dict_reduced:
             metric_logger.update(force_loss=loss_dict_reduced['loss_force_matrix'] * weight_dict['loss_force_matrix'])
+        
+        # Update mixed force loss components if available
+        if 'loss_mixed_force_contact' in loss_dict_reduced:
+            metric_logger.update(mixed_force_loss=loss_dict_reduced['loss_mixed_force_contact'] * weight_dict.get('loss_mixed_force_contact', 1.0))
+        if 'loss_contact_component' in loss_dict_reduced:
+            metric_logger.update(contact_loss=loss_dict_reduced['loss_contact_component'])
+        if 'loss_force_component' in loss_dict_reduced:
+            metric_logger.update(force_component_loss=loss_dict_reduced['loss_force_component'])
+        if 'contact_weight' in loss_dict_reduced:
+            metric_logger.update(contact_weight=loss_dict_reduced['contact_weight'])
+        if 'force_weight' in loss_dict_reduced:
+            metric_logger.update(force_weight=loss_dict_reduced['force_weight'])
+            
         metric_logger.update(lr=optimizer.param_groups[0]["lr"])
         metric_logger.update(grad_norm=grad_total_norm)
 
@@ -369,8 +418,20 @@ def pose_evaluate(model, matcher, pose_evaluator, data_loader, image_set, bbox_m
         
         # Extract force matrix predictions if available
         pred_force_matrix = None
+        pred_contact_matrix = None
         if "pred_force_matrix" in outputs_without_aux:
-            pred_force_matrix = outputs_without_aux["pred_force_matrix"][idx].detach().cpu().numpy()  # [n_matched, n_queries, 3]
+            # Force matrix should NOT be indexed by idx since it represents pairwise interactions
+            # Keep the full [bs, n_queries, n_queries, 3] shape
+            pred_force_matrix = outputs_without_aux["pred_force_matrix"].detach().cpu().numpy()  # [bs, n_queries, n_queries, 3]
+            print(f"DEBUG FORCE MATRIX EXTRACTION:")
+            print(f"  pred_force_matrix shape: {pred_force_matrix.shape}")
+            print(f"  pred_force_matrix magnitude - max: {np.linalg.norm(pred_force_matrix, axis=-1).max():.6f}, min: {np.linalg.norm(pred_force_matrix, axis=-1).min():.6f}, mean: {np.linalg.norm(pred_force_matrix, axis=-1).mean():.6f}")
+
+        if "pred_contact_matrix" in outputs_without_aux:
+            # Contact matrix should also NOT be indexed by idx for the same reason
+            pred_contact_matrix = outputs_without_aux["pred_contact_matrix"].detach().cpu().numpy()  # [bs, n_queries, n_queries, 1]
+            print(f"DEBUG CONTACT MATRIX EXTRACTION:")
+            print(f"  pred_contact_matrix shape: {pred_contact_matrix.shape}")
 
         if rotation_mode in ['quat', 'silho_quat']:
             pred_rotations = quat2rot(pred_rotations)
@@ -405,13 +466,10 @@ def pose_evaluate(model, matcher, pose_evaluator, data_loader, image_set, bbox_m
             pose_evaluator.poses_img[cls].append(img_file)
             pose_evaluator.num[cls] += 1
             pose_evaluator.camera_intrinsics[cls].append(intrinsic)
-
-        # Store force matrix predictions and targets if available
+        
         if pred_force_matrix is not None and tgt_force_matrices:
-            batch_size = pred_force_matrix.shape[0]
-            
             # Group by image/batch for proper force matrix storage
-            current_idx = 0
+            obj_idx_offset = 0  # Track position in obj_classes_idx array
             for batch_idx, (batch_target, (src_idx, tgt_idx)) in enumerate(zip(targets, indices)):
                 if batch_idx >= len(tgt_force_matrices):
                     break
@@ -421,50 +479,129 @@ def pose_evaluate(model, matcher, pose_evaluator, data_loader, image_set, bbox_m
                     continue
                 
                 # Extract predicted and ground truth force matrices for this batch
-                if current_idx + n_objects_in_batch <= batch_size:
-                    # Get the force matrix for this batch - we take the first object's perspective
-                    # Since force matrix is [N, N, 3], we use the full matrix
-                    batch_pred_matrix = pred_force_matrix[current_idx:current_idx + n_objects_in_batch]  # [n_objects, n_queries, 3]
+                if batch_idx < pred_force_matrix.shape[0]:
+                    # Get the force matrix for this batch - now correctly shaped [n_queries, n_queries, 3]
+                    batch_pred_matrix = pred_force_matrix[batch_idx]  # [n_queries, n_queries, 3]
                     batch_gt_matrix = tgt_force_matrices[batch_idx]  # [N, N, 3]
                     
-                    # For storage, we need to decide how to associate force matrices with classes
-                    # Option 1: Store the full matrix for the first class in the batch
-                    # Option 2: Store per-object force relationships
+                    # Extract contact matrix predictions if available
+                    batch_pred_contact = None
+                    if pred_contact_matrix is not None:
+                        batch_pred_contact = pred_contact_matrix[batch_idx]  # [n_queries, n_queries, 1]
                     
-                    # Using Option 1 for simplicity - store full matrix for primary class
+                    # For storage, we need to decide how to associate force matrices with classes
+                    # Using the primary class for simplicity - store full matrix for primary class
                     if n_objects_in_batch > 0:
-                        primary_cls_idx = obj_classes_idx[current_idx]
+                        primary_cls_idx = obj_classes_idx[obj_idx_offset]
                         primary_cls = pose_evaluator.classes_map[str(primary_cls_idx)]
                         
-                        # Reshape predicted matrix to match ground truth format [N, N, 3]
-                        # Here we assume the predicted matrix represents force relationships
-                        # between the n_queries objects in the scene
-                        n_queries = batch_pred_matrix.shape[1]
-                        reshaped_pred_matrix = batch_pred_matrix[0]  # Take first object's view: [n_queries, 3]
+                        # Apply matching logic: reorder predictions to match ground truth size
+                        # Following the same logic as in loss functions
+                        n_objects = batch_gt_matrix.shape[0]  # Ground truth size
+                        n_queries = batch_pred_matrix.shape[0]  # Prediction size (both dimensions)
                         
-                        # Convert to full matrix format [n_queries, n_queries, 3]
-                        full_pred_matrix = np.zeros((n_queries, n_queries, 3))
-                        for j in range(n_objects_in_batch):
-                            if j < batch_pred_matrix.shape[0]:
-                                full_pred_matrix[j, :, :] = batch_pred_matrix[j]  # [n_queries, 3]
+                        # Convert batch_pred_matrix to tensor if it's numpy array
+                        if isinstance(batch_pred_matrix, np.ndarray):
+                            batch_pred_matrix = torch.from_numpy(batch_pred_matrix).to(device)
                         
-                        # Ensure ground truth matrix matches the prediction matrix size
-                        gt_matrix_resized = batch_gt_matrix.copy()
-                        if gt_matrix_resized.shape[0] != n_queries or gt_matrix_resized.shape[1] != n_queries:
-                            # Resize ground truth to match prediction
-                            if gt_matrix_resized.shape[0] < n_queries:
-                                pad_size = n_queries - gt_matrix_resized.shape[0]
-                                gt_matrix_resized = np.pad(gt_matrix_resized, 
-                                                         ((0, pad_size), (0, pad_size), (0, 0)), 
-                                                         mode='constant', constant_values=0)
+                        # Reorder predictions using Hungarian matching indices
+                        reordered_pred_matrix = torch.zeros((n_objects, n_objects, 3), 
+                                                           dtype=batch_pred_matrix.dtype, 
+                                                           device=batch_pred_matrix.device)
+                        
+                        # Map predictions to ground truth positions using indices
+                        for i, tgt_i in enumerate(tgt_idx):
+                            for j, tgt_j in enumerate(tgt_idx):  # Use tgt_idx for both dimensions
+                                if i < len(src_idx) and j < len(src_idx):
+                                    src_i = src_idx[i]
+                                    src_j = src_idx[j]
+                                    if src_i < n_queries and src_j < n_queries:
+                                        reordered_pred_matrix[tgt_i, tgt_j] = batch_pred_matrix[src_i, src_j]
+                        
+                        # Convert to numpy for storage
+                        if hasattr(reordered_pred_matrix, 'cpu'):
+                            final_pred_matrix = reordered_pred_matrix.cpu().numpy()
+                        else:
+                            final_pred_matrix = reordered_pred_matrix
+                        
+                        # Debug: Print force matrix information
+                        print(f"DEBUG Force Matrix Reordering:")
+                        print(f"  batch_pred_matrix shape: {batch_pred_matrix.shape}")
+                        print(f"  final_pred_matrix shape: {final_pred_matrix.shape}")
+                        print(f"  gt_matrix_final shape: {batch_gt_matrix.shape}")
+                        print(f"  tgt_idx: {tgt_idx}")
+                        print(f"  src_idx: {src_idx}")
+                        
+                        # Check original predicted force magnitudes before reordering
+                        if hasattr(batch_pred_matrix, 'cpu'):
+                            orig_pred_matrix = batch_pred_matrix.cpu().numpy()
+                        else:
+                            orig_pred_matrix = batch_pred_matrix
+                        orig_pred_magnitude = np.linalg.norm(orig_pred_matrix, axis=-1)
+                        print(f"  ORIGINAL batch_pred_matrix magnitude - max: {orig_pred_magnitude.max():.6f}, min: {orig_pred_magnitude.min():.6f}, mean: {orig_pred_magnitude.mean():.6f}")
+                        print(f"  ORIGINAL > 1e-2: {(orig_pred_magnitude > 1e-2).sum()}, > 1e-1: {(orig_pred_magnitude > 1e-1).sum()}, > 1.0: {(orig_pred_magnitude > 1.0).sum()}")
+                        
+                        # Check predicted force magnitudes after reordering
+                        pred_force_magnitude = np.linalg.norm(final_pred_matrix, axis=-1)
+                        print(f"  REORDERED pred_force_magnitude - max: {pred_force_magnitude.max():.6f}, min: {pred_force_magnitude.min():.6f}, mean: {pred_force_magnitude.mean():.6f}")
+                        print(f"  REORDERED > 1e-2: {(pred_force_magnitude > 1e-2).sum()}, > 1e-1: {(pred_force_magnitude > 1e-1).sum()}, > 1.0: {(pred_force_magnitude > 1.0).sum()}")
+                        
+                        # Check ground truth force magnitudes
+                        gt_force_magnitude = np.linalg.norm(batch_gt_matrix, axis=-1)
+                        print(f"  GT force magnitude - max: {gt_force_magnitude.max():.6f}, min: {gt_force_magnitude.min():.6f}, mean: {gt_force_magnitude.mean():.6f}")
+                        print(f"  GT > 1e-2: {(gt_force_magnitude > 1e-2).sum()}, > 1e-1: {(gt_force_magnitude > 1e-1).sum()}, > 1.0: {(gt_force_magnitude > 1.0).sum()}")
+                        
+                        
+                        # Process contact matrix predictions if available
+                        final_pred_contact = None
+                        if batch_pred_contact is not None:
+                            # Convert batch_pred_contact to tensor if it's numpy array
+                            if isinstance(batch_pred_contact, np.ndarray):
+                                batch_pred_contact = torch.from_numpy(batch_pred_contact).to(device)
+                            
+                            # Reorder contact predictions using the same matching logic
+                            reordered_pred_contact = torch.zeros((n_objects, n_objects, 1), 
+                                                                dtype=batch_pred_contact.dtype, 
+                                                                device=batch_pred_contact.device)
+                            
+                            # Map contact predictions to ground truth positions using indices
+                            for i, tgt_i in enumerate(tgt_idx):
+                                for j, tgt_j in enumerate(tgt_idx):  # Use tgt_idx for both dimensions
+                                    if i < len(src_idx) and j < len(src_idx) and i < n_queries and j < n_queries:
+                                        # Extract the contact value properly, handling different tensor shapes
+                                        contact_value = batch_pred_contact[i, j]
+                                        if contact_value.dim() > 1:
+                                            contact_value = contact_value.squeeze()
+                                        reordered_pred_contact[tgt_i, tgt_j] = contact_value
+                            
+                            # Convert to numpy for storage
+                            if hasattr(reordered_pred_contact, 'cpu'):
+                                final_pred_contact = reordered_pred_contact.cpu().numpy()
                             else:
-                                gt_matrix_resized = gt_matrix_resized[:n_queries, :n_queries, :]
+                                final_pred_contact = reordered_pred_contact
                         
+                        # Use ground truth matrix as-is (no resizing needed)
+                        gt_matrix_final = batch_gt_matrix.copy()
+                        
+                        # Create ground truth contact matrix from force matrix
+                        # Contact is determined by force magnitude > threshold
+                        contact_threshold = 1e-2  # Can be made configurable
+
+                        gt_force_magnitude = np.linalg.norm(gt_matrix_final, axis=-1)  # [n_objects, n_objects]
+
+                        gt_contact_matrix = (gt_force_magnitude > contact_threshold).astype(np.float32)  # [n_objects, n_objects]
+
                         # Store the force matrices
-                        pose_evaluator.force_matrices_pred[primary_cls].append(full_pred_matrix)
-                        pose_evaluator.force_matrices_gt[primary_cls].append(gt_matrix_resized)
-                    
-                    current_idx += n_objects_in_batch
+                        pose_evaluator.force_matrices_pred[primary_cls].append(final_pred_matrix)
+                        pose_evaluator.force_matrices_gt[primary_cls].append(gt_matrix_final)
+                        
+                        # Store the contact matrices only if predictions are available and valid
+                        if final_pred_contact is not None:
+                            pose_evaluator.contact_matrices_pred[primary_cls].append(final_pred_contact)
+                            pose_evaluator.contact_matrices_gt[primary_cls].append(gt_contact_matrix)
+                
+                # Update obj_idx_offset to track position in obj_classes_idx array
+                obj_idx_offset += n_objects_in_batch
 
         batch_total_time = time.time() - batch_start_time
         batch_total_time_str = str(datetime.timedelta(seconds=int(batch_total_time)))
@@ -534,6 +671,39 @@ def pose_evaluate(model, matcher, pose_evaluator, data_loader, image_set, bbox_m
             print(f"  Recall: {overall_results['recall']:.6f}")
             print(f"  F1 Score: {overall_results['f1_score']:.6f}")
     
+    # Contact classification and conditional force regression evaluation
+    contact_classification_results = None
+    conditional_force_results = None
+    
+    # Check if contact classification data is available
+    has_contact_data = any(len(pose_evaluator.contact_matrices_pred[cls]) > 0 for cls in pose_evaluator.classes)
+    
+    if has_contact_data:
+        print("Start Calculating Contact Classification Metrics")
+        contact_classification_results = pose_evaluator.evaluate_contact_classification(output_eval_dir, epoch)
+        
+        if contact_classification_results and "overall" in contact_classification_results:
+            overall_contact = contact_classification_results["overall"]
+            print(f"Contact Classification Evaluation Results:")
+            print(f"  Overall Accuracy: {overall_contact['accuracy']:.6f}")
+            print(f"  Overall Precision: {overall_contact['precision']:.6f}")
+            print(f"  Overall Recall: {overall_contact['recall']:.6f}")
+            print(f"  Overall F1 Score: {overall_contact['f1_score']:.6f}")
+            print(f"  Overall AUC: {overall_contact['auc']:.6f}")
+        
+        print("Start Calculating Conditional Force Regression Metrics")
+        conditional_force_results = pose_evaluator.evaluate_conditional_force_regression(output_eval_dir, epoch)
+        
+        if conditional_force_results and "overall" in conditional_force_results:
+            overall_cond_force = conditional_force_results["overall"]
+            print(f"Conditional Force Regression Evaluation Results:")
+            print(f"  Contact Region MSE: {overall_cond_force['contact_mse']:.6f}")
+            print(f"  Contact Region MAE: {overall_cond_force['contact_mae']:.6f}")
+            print(f"  Non-Contact Region MSE: {overall_cond_force['noncontact_mse']:.6f}")
+            print(f"  Non-Contact Region MAE: {overall_cond_force['noncontact_mae']:.6f}")
+            print(f"  Overall MSE: {overall_cond_force['overall_mse']:.6f}")
+            print(f"  Overall MAE: {overall_cond_force['overall_mae']:.6f}")
+    
     if not has_force_data and not has_force_matrix_data:
         print("No force data available for evaluation")
     
@@ -549,7 +719,9 @@ def pose_evaluate(model, matcher, pose_evaluator, data_loader, image_set, bbox_m
         'force_mae': force_mae,
         'force_rmse': force_rmse,
         'avg_force_matrix_error': avg_force_matrix_error,
-        'force_matrix_results': force_matrix_results
+        'force_matrix_results': force_matrix_results,
+        'contact_classification_results': contact_classification_results,
+        'conditional_force_results': conditional_force_results
     }
     return eval_results
 

@@ -20,6 +20,18 @@ from scipy.linalg import logm
 import numpy.linalg as LA
 
 
+class NumpyEncoder(json.JSONEncoder):
+    """ Special json encoder for numpy types """
+    def default(self, obj):
+        if isinstance(obj, np.integer):
+            return int(obj)
+        if isinstance(obj, np.floating):
+            return float(obj)
+        if isinstance(obj, np.ndarray):
+            return obj.tolist()
+        return super(NumpyEncoder, self).default(obj)
+
+
 class PoseEvaluatorLMO(object):
     def __init__(self, models, classes, model_info, model_symmetry, depth_scale=0.1):
         """
@@ -198,7 +210,7 @@ class PoseEvaluatorLMO(object):
 
         log_file.write("\n")
         log_file.close()
-        json.dump(adds_results, json_file)
+        json.dump(adds_results, json_file, cls=NumpyEncoder)
         json_file.close()
         return
 
@@ -327,7 +339,7 @@ class PoseEvaluatorLMO(object):
 
         log_file.write("\n")
         log_file.close()
-        json.dump(adi_results, json_file)
+        json.dump(adi_results, json_file, cls=NumpyEncoder)
         json_file.close()
         return
 
@@ -458,7 +470,7 @@ class PoseEvaluatorLMO(object):
 
         log_file.write("\n")
         log_file.close()
-        json.dump(add_results, json_file)
+        json.dump(add_results, json_file, cls=NumpyEncoder)
         json_file.close()
         return
 
@@ -505,7 +517,7 @@ class PoseEvaluatorLMO(object):
 
         log_file.write("\n")
         log_file.close()
-        json.dump(avg_translation_errors, json_file)
+        json.dump(avg_translation_errors, json_file, cls=NumpyEncoder)
         json_file.close()
         return
 
@@ -561,7 +573,7 @@ class PoseEvaluatorLMO(object):
 
         log_file.write("\n")
         log_file.close()
-        json.dump(avg_rotation_errors, json_file)
+        json.dump(avg_rotation_errors, json_file, cls=NumpyEncoder)
         json_file.close()
         return
 
