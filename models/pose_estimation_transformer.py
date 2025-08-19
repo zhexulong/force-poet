@@ -94,6 +94,14 @@ class PoET(nn.Module):
         if self.use_force_prediction:
             self.mass_embed = nn.Linear(1, hidden_dim // 4)  # Mass embedding
         
+        # Environment query generator from backbone features
+        if self.use_force_prediction:
+            # Get backbone output channels for environment feature generation
+            backbone_out_channels = self.backbone.num_channels[-1]
+            self.environment_generator = MLP(input_dim=backbone_out_channels, hidden_dim=hidden_dim, output_dim=hidden_dim, num_layers=2)
+            # Environment mass embedding
+            self.environment_mass_embedding = nn.Parameter(torch.randn(1, hidden_dim // 4))
+        
         # Force Matrix Head for pairwise force prediction
         if self.use_force_prediction:
             self.force_matrix_head = ForceMatrixHead(
@@ -103,7 +111,8 @@ class PoET(nn.Module):
                 num_layers=graph_num_layers,
                 edge_features='concat',
                 dropout=0.1,
-                mass_embed_dim=hidden_dim // 4
+                mass_embed_dim=hidden_dim // 4,
+                use_geometric_features=False
             )
 
         # Translation & Rotation Estimation Head
@@ -211,6 +220,16 @@ class PoET(nn.Module):
         # Store the image size in HxW
         image_sizes = [[sample.shape[-2], sample.shape[-1]] for sample in samples.tensors]
         features, pos, pred_objects = self.backbone(samples)
+
+        # Generate environment query from backbone features
+        env_query = None
+        if self.use_force_prediction:
+            # Use the last feature map for environment feature generation (semantically richest)
+            last_feature_map = features[-1].tensors  # Shape: [B, C, H, W]
+            # Global average pooling to get scene representation
+            pooled_feature = F.adaptive_avg_pool2d(last_feature_map, (1, 1)).flatten(1)  # Shape: [B, C]
+            # Generate environment query
+            env_query = self.environment_generator(pooled_feature).unsqueeze(1)  # Shape: [B, 1, hidden_dim]
 
         assert samples.tensors.shape[0] == len(pred_objects), "Number of predictions must match number of images!"
 
@@ -382,6 +401,7 @@ class PoET(nn.Module):
         
         # Extract mass information for force matrix prediction (if enabled)
         masses = None
+        env_mass_embed = None
         if self.use_force_prediction and targets is not None:
             masses = []
             for target in targets:
@@ -402,10 +422,16 @@ class PoET(nn.Module):
                 masses.append(target_masses)
             
             masses = torch.stack(masses)  # [bs, n_queries]
+            
+            # Generate environment mass embedding
+            env_mass_embed = self.environment_mass_embedding.expand(masses.shape[0], -1, -1)  # [B, 1, mass_embed_dim]
+            
         elif self.use_force_prediction:
             # Use dummy values during inference
             bs = hs.shape[1]
             masses = torch.ones(bs, self.n_queries, device=hs.device)
+            # Generate environment mass embedding
+            env_mass_embed = self.environment_mass_embedding.expand(bs, -1, -1)  # [B, 1, mass_embed_dim]
 
         outputs_translation = []
         outputs_rotation = []
@@ -446,26 +472,45 @@ class PoET(nn.Module):
                 output_translation = torch.cat(selected_translations).view(bs, self.n_queries, -1)  # (bs, n_queries, 3)
             
             # Force matrix and contact prediction (MOVED AFTER translation processing)
-            if self.use_force_prediction:
-                # Embed mass information
-                mass_embeds = self.mass_embed(masses.unsqueeze(-1))  # [bs, n_queries, mass_embed_dim]
+            if self.use_force_prediction and env_query is not None:
+                # Embed mass information for objects
+                if masses is not None:
+                    mass_embeds = self.mass_embed(masses.unsqueeze(-1))  # [bs, n_queries, mass_embed_dim]
+                else:
+                    bs = hs[lvl].shape[0]
+                    masses = torch.ones(bs, self.n_queries, device=hs[lvl].device)
+                    mass_embeds = self.mass_embed(masses.unsqueeze(-1))
                 
-                # Predict pairwise force matrix and contact matrix using ForceMatrixHead with geometric features
-                # Now output_translation has the correct shape [bs, n_queries, 3]
+                # Integrate environment node into force prediction
+                # 1. Concatenate object features with environment query
+                hs_for_force = torch.cat([hs[lvl], env_query], dim=1)  # [B, N+1, C]
+                
+                # 2. Concatenate object translations with environment virtual translation (origin)
+                env_translation = torch.zeros(hs[lvl].shape[0], 1, 3, device=hs[lvl].device)
+                translations_for_force = torch.cat([output_translation, env_translation], dim=1)  # [B, N+1, 3]
+                
+                # 3. Concatenate object mass embeddings with environment mass embedding
+                if env_mass_embed is not None:
+                    masses_for_force = torch.cat([mass_embeds, env_mass_embed], dim=1)  # [B, N+1, mass_embed_dim]
+                else:
+                    # Fallback: create dummy environment mass embedding
+                    bs = mass_embeds.shape[0]
+                    dummy_env_mass = torch.zeros(bs, 1, mass_embeds.shape[-1], device=mass_embeds.device)
+                    masses_for_force = torch.cat([mass_embeds, dummy_env_mass], dim=1)
+                
+                # 4. Predict pairwise force matrix and contact matrix with N+1 entities
                 output_force_matrix, output_contact_matrix = self.force_matrix_head[lvl](
-                    hs[lvl], 
-                    mass_embeds=mass_embeds,
-                    pred_translations=output_translation,
-                    pred_rotations=output_rotation
+                    hs_for_force, 
+                    mass_embeds=masses_for_force,
                 )
-                outputs_force_matrices.append(output_force_matrix)
+                outputs_force_matrices.append(output_force_matrix)  # Now [B, N+1, N+1, 3]
                 
                 # Store contact matrices for mixed loss calculation
                 if not hasattr(self, 'outputs_contact_matrices'):
                     self.outputs_contact_matrices = []
                 if lvl == 0:  # Reset for new forward pass
                     self.outputs_contact_matrices = []
-                self.outputs_contact_matrices.append(output_contact_matrix)
+                self.outputs_contact_matrices.append(output_contact_matrix)  # Now [B, N+1, N+1, 1]
 
             # transform 6D rotation representation to 3x3 rotation matrix (or quaternion)
             output_rotation = self.process_rotation(output_rotation)
@@ -570,14 +615,16 @@ class SetCriterion(nn.Module):
         1) we compute hungarian assignment between ground truth boxes and the outputs of the model
         2) we supervise each pair of matched ground-truth / prediction (supervise translation and rotation)
     """
-    def __init__(self, matcher, weight_dict, losses, hard_negative_ratio=0.2, force_scale_factor=5.0, 
-                 contact_loss_weight=1.0, force_loss_weight=1.0, contact_threshold=1e-2, 
-                 focal_alpha=0.25, focal_gamma=2.0, curriculum_epochs=30):
+    def __init__(self, matcher, weight_dict, losses, n_obj_queries, hard_negative_ratio=0.2, force_scale_factor=5.0,
+                 contact_loss_weight=1.0, force_loss_weight=1.0, contact_threshold=1e-2,
+                 focal_alpha=0.25, focal_gamma=2.0, curriculum_epochs=30,
+                 object_object_weight=5.0, environment_weight=1.0):
         """ Create the criterion.
         Parameters:
             matcher: module able to compute a matching between targets and proposals
             weight_dict: dict containing as key the names of the losses and as values their relative weight.
             losses: list of all the losses to be applied. See get_loss for list of available losses.
+            n_obj_queries: number of object queries, to distinguish from the environment query.
             hard_negative_ratio: ratio of hard negatives to keep for improved negative sampling
             force_scale_factor: scaling factor for force values to improve training stability
             contact_loss_weight: weight for contact classification loss in mixed loss
@@ -586,11 +633,14 @@ class SetCriterion(nn.Module):
             focal_alpha: alpha parameter for focal loss
             focal_gamma: gamma parameter for focal loss
             curriculum_epochs: number of epochs for curriculum learning
+            object_object_weight: weight for object-object force predictions
+            environment_weight: weight for environment force predictions
         """
         super().__init__()
         self.matcher = matcher
         self.weight_dict = weight_dict
         self.losses = losses
+        self.n_obj_queries = n_obj_queries
         self.hard_negative_ratio = hard_negative_ratio
         self.force_scale_factor = force_scale_factor
         self.contact_loss_weight = contact_loss_weight
@@ -599,7 +649,43 @@ class SetCriterion(nn.Module):
         self.focal_alpha = focal_alpha
         self.focal_gamma = focal_gamma
         self.curriculum_epochs = curriculum_epochs
+        self.object_object_weight = object_object_weight
+        self.environment_weight = environment_weight
         self.current_epoch = 0
+
+    def _reorder_matrix(self, pred_matrix_item, n_gt_objects, src_idx, tgt_idx):
+        """
+        Reorders a prediction matrix from query space to ground truth space, including the environment.
+        - pred_matrix_item: Single prediction matrix from the batch [n_obj_queries+1, n_obj_queries+1, C]
+        - n_gt_objects: Number of ground truth objects in the current sample.
+        - src_idx, tgt_idx: Matching indices from Hungarian matcher for objects.
+        Returns a reordered matrix of size [n_gt_objects+1, n_gt_objects+1, C].
+        """
+        device = pred_matrix_item.device
+        C = pred_matrix_item.shape[-1]
+        n_total_gt_entities = n_gt_objects + 1
+        
+        reordered_matrix = torch.zeros(n_total_gt_entities, n_total_gt_entities, C, device=device)
+
+        # The environment query is at index `self.n_obj_queries`
+        env_query_idx = self.n_obj_queries
+
+        # Map matched object-object predictions
+        for t1, s1 in zip(tgt_idx, src_idx):
+            for t2, s2 in zip(tgt_idx, src_idx):
+                reordered_matrix[t1, t2] = pred_matrix_item[s1, s2]
+        
+        # Map object-environment interactions
+        for t_obj, s_obj in zip(tgt_idx, src_idx):
+            # Interaction from environment on object (e.g., F_obj,env)
+            reordered_matrix[t_obj, n_gt_objects] = pred_matrix_item[s_obj, env_query_idx]
+            # Interaction from object on environment (e.g., F_env,obj)
+            reordered_matrix[n_gt_objects, t_obj] = pred_matrix_item[env_query_idx, s_obj]
+
+        # Map environment-environment self-interaction
+        reordered_matrix[n_gt_objects, n_gt_objects] = pred_matrix_item[env_query_idx, env_query_idx]
+
+        return reordered_matrix
 
     def loss_translation(self, outputs, targets, indices):
         """
@@ -710,70 +796,79 @@ class SetCriterion(nn.Module):
 
     def loss_force_matrix(self, outputs, targets, indices):
         """
-        Compute the contact-primed force regression loss using matched indices.
-        Only compute force loss on pairs predicted as having contact.
-        outputs must contain 'pred_force_matrix' and 'pred_contact_matrix', targets must contain 'force_matrix'
+        Compute the contact-primed force regression loss using matched indices, including environment interactions.
+        Uses both predicted contact probabilities and ground truth contact labels for masking.
         """
-        if 'pred_force_matrix' not in outputs:
+        if 'pred_force_matrix' not in outputs or 'pred_contact_matrix' not in outputs:
             return {"loss_force_matrix": torch.tensor(0.0, device=next(iter(outputs.values())).device)}
         
-        pred_force_matrices = outputs["pred_force_matrix"]  # [bs, n_queries, n_queries, 3]
-        batch_size = pred_force_matrices.shape[0]
-        n_queries = pred_force_matrices.shape[1]
+        pred_force_matrices = outputs["pred_force_matrix"]  # [bs, n_queries+1, n_queries+1, 3]
+        pred_contact_logits = outputs["pred_contact_matrix"]  # [bs, n_queries+1, n_queries+1, 1]
         device = pred_force_matrices.device
         
         total_loss = 0.0
         valid_loss_count = 0
         
         for i, (t, (src_idx, tgt_idx)) in enumerate(zip(targets, indices)):
+            # The ground truth force_matrix should now be [N_obj+1, N_obj+1, 3]
             if 'force_matrix' in t and t['force_matrix'] is not None and len(src_idx) > 0:
-                target_matrix = t['force_matrix']  # [N, N, 3] where N is number of objects
-                n_objects = target_matrix.shape[0]
+                target_matrix = t['force_matrix']
+                n_objects = target_matrix.shape[0] - 1  # Subtract 1 for environment
                 
-                # Create ground truth contact matrix
-                force_magnitude = torch.norm(target_matrix, dim=-1)  # [N, N]
-                gt_contact_matrix = (force_magnitude > self.contact_threshold).float()  # [N, N]
+                # Reorder predictions to match ground truth space [N_obj+1, N_obj+1, 3]
+                reordered_pred_force = self._reorder_matrix(
+                    pred_force_matrices[i], n_objects, src_idx, tgt_idx
+                )
                 
-                # Reorder predictions to match ground truth size [N, N, 3]
-                reordered_pred_force = torch.zeros(n_objects, n_objects, 3, device=device)
-                reordered_pred_contact = torch.zeros(n_objects, n_objects, device=device)
+                # Reorder contact predictions to match ground truth space [N_obj+1, N_obj+1]
+                reordered_pred_contact_logits = self._reorder_matrix(
+                    pred_contact_logits[i], n_objects, src_idx, tgt_idx
+                ).squeeze(-1)
                 
-                # Get contact predictions for this batch
-                if 'pred_contact_matrix' in outputs:
-                    pred_contact_logits = outputs["pred_contact_matrix"][i]  # [n_queries, n_queries, 1]
-                    contact_probs = torch.sigmoid(pred_contact_logits.squeeze(-1))  # [n_queries, n_queries]
-                    contact_threshold = 0.5 if self.current_epoch > self.curriculum_epochs // 2 else 0.3
-                    pred_contact_matrix = (contact_probs > contact_threshold).float()
-                else:
-                    pred_contact_matrix = torch.ones(n_queries, n_queries, device=device)
+                # Convert contact logits to probabilities
+                pred_contact_probs = torch.sigmoid(reordered_pred_contact_logits)
                 
-                # Map predictions from n_queries space to n_objects space using indices
-                for t1, s1 in zip(tgt_idx, src_idx):
-                    for t2, s2 in zip(tgt_idx, src_idx):
-                        if (t1 < n_objects and t2 < n_objects and 
-                            s1 < n_queries and s2 < n_queries):
-                            reordered_pred_force[t1, t2] = pred_force_matrices[i, s1, s2]
-                            reordered_pred_contact[t1, t2] = pred_contact_matrix[s1, s2]
+                # Create ground truth contact matrix from the full target matrix
+                force_magnitude = torch.norm(target_matrix, dim=-1)
+                gt_contact_matrix = (force_magnitude > self.contact_threshold).float()
+                
+                # The rest of the logic operates on [N_obj+1, N_obj+1] matrices
+                n_total_entities = n_objects + 1
+                non_diagonal_mask = 1 - torch.eye(n_total_entities, device=device)
                 
                 # Apply force scaling to target values
                 scaled_target_matrix = target_matrix * self.force_scale_factor
                 
-                # Create combined mask: ground truth contacts + predicted contacts (for curriculum learning)
-                curriculum_weight = min(1.0, self.current_epoch / self.curriculum_epochs)
-                combined_mask = gt_contact_matrix + curriculum_weight * reordered_pred_contact
-                combined_mask = torch.clamp(combined_mask, 0, 1)  # Ensure values are in [0,1]
+                # Contact-primed mask: combine predicted and ground truth contacts
+                # Only compute force loss when both model predicts contact AND ground truth has contact
+                contact_threshold_for_pred = 0.5  # Threshold for predicted contact probability
+                pred_contact_mask = (pred_contact_probs > contact_threshold_for_pred).float()
                 
-                # Compute force regression loss only on masked pairs
-                force_loss = F.mse_loss(reordered_pred_force, scaled_target_matrix, reduction='none')  # [N, N, 3]
-                force_loss = force_loss.sum(dim=-1)  # Sum over force components -> [N, N]
+                # Final contact mask: intersection of predicted contact and ground truth contact
+                contact_mask = (pred_contact_mask + gt_contact_matrix) * non_diagonal_mask
                 
-                # Apply contact mask
-                masked_force_loss = force_loss * combined_mask
+                # Create masks for object-object and environment interactions
+                # Object-object interactions: both indices < n_objects
+                object_object_mask = (torch.arange(n_total_entities, device=device).unsqueeze(1) < n_objects) & \
+                                     (torch.arange(n_total_entities, device=device).unsqueeze(0) < n_objects)
+                object_object_mask = object_object_mask.float() * non_diagonal_mask
                 
-                # Normalize by number of contact pairs
-                num_contact_pairs = combined_mask.sum()
+                # Environment interactions: at least one index == n_objects (environment)
+                environment_mask = 1 - object_object_mask  # Everything that's not object-object is environment
+                environment_mask = environment_mask.float() * non_diagonal_mask
+                # Apply weighting based on interaction type
+                weight_mask = object_object_mask * self.object_object_weight + environment_mask * self.environment_weight
+                
+                # Compute force regression loss only on contact pairs
+                force_loss = F.mse_loss(reordered_pred_force, scaled_target_matrix, reduction='none').sum(dim=-1)
+                # Apply both contact mask and weight mask
+                masked_force_loss = force_loss * contact_mask * weight_mask
+                
+                num_contact_pairs = contact_mask.sum()
                 if num_contact_pairs > 0:
-                    batch_loss = masked_force_loss.sum() / num_contact_pairs
+                    # Normalize by the sum of weights to maintain consistent loss scale
+                    total_weight = (contact_mask * weight_mask).sum()
+                    batch_loss = masked_force_loss.sum() / (total_weight + 1e-6)
                     total_loss += batch_loss
                     valid_loss_count += 1
         
@@ -788,10 +883,6 @@ class SetCriterion(nn.Module):
         
         return {"loss_force_matrix": total_loss}
     
-    def set_epoch(self, epoch):
-        """Set current epoch for curriculum learning in contact-primed force regression."""
-        self.current_epoch = epoch
- 
     def loss_force_symmetry(self, outputs, targets, indices):
         """
         Compute the normalized masked symmetry loss for force prediction using matched indices.
@@ -938,123 +1029,133 @@ class SetCriterion(nn.Module):
 
     def loss_contact_classification(self, outputs, targets, indices):
         """
-        Compute the contact classification loss using BCE Loss with negative sampling strategy.
-        outputs must contain the key 'pred_contact_matrix', while targets must contain the key 'force_matrix'
+        Compute the contact classification loss with hard negative mining, including environment interactions.
         """
         if 'pred_contact_matrix' not in outputs:
             return {"loss_contact_classification": torch.tensor(0.0, device=next(iter(outputs.values())).device)}
         
-        pred_contact_logits = outputs["pred_contact_matrix"]  # [bs, n_queries, n_queries, 1]
-        batch_size = pred_contact_logits.shape[0]
-        n_queries = pred_contact_logits.shape[1]
+        pred_contact_logits = outputs["pred_contact_matrix"]  # [bs, n_queries+1, n_queries+1, 1]
         device = pred_contact_logits.device
-        
-        # Flatten logits for easier processing
-        pred_contact_logits = pred_contact_logits.squeeze(-1)  # [bs, n_queries, n_queries]
         
         total_contact_loss = 0.0
         valid_loss_count = 0
-        
-        # Hard negative sampling parameters (similar to force matrix loss)
-        hard_negative_ratio = getattr(self, 'hard_negative_ratio', 0.2)
-        
         for i, (t, (src_idx, tgt_idx)) in enumerate(zip(targets, indices)):
             if 'force_matrix' in t and t['force_matrix'] is not None and len(src_idx) > 0:
-                valid_loss_count += 1
-                target_matrix = t['force_matrix']  # [N, N, 3] where N is number of objects in this image
-                n_objects = target_matrix.shape[0]
+                target_matrix = t['force_matrix']
+                n_objects = target_matrix.shape[0] - 1  # Subtract 1 for environment
                 
-                # Create contact labels based on force magnitude
-                target_force_magnitude = torch.norm(target_matrix, dim=-1)  # [N, N]
-                contact_labels = (target_force_magnitude > self.contact_threshold).float()  # [N, N]
+                # Reorder prediction logits to match ground truth space
+                reordered_pred_logits = self._reorder_matrix(
+                    pred_contact_logits[i], n_objects, src_idx, tgt_idx
+                ).squeeze(-1)  # Shape: [N_obj+1, N_obj+1]
                 
-                # Reorder predictions to match ground truth size [N, N]
-                reordered_pred_logits = torch.zeros(n_objects, n_objects, device=device)
+                # Create ground truth contact matrix
+                force_magnitude = torch.norm(target_matrix, dim=-1)
+                gt_contacts = (force_magnitude > self.contact_threshold).float()
                 
-                # Map predictions from n_queries space to n_objects space using indices
-                for t1, s1 in zip(tgt_idx, src_idx):
-                    for t2, s2 in zip(tgt_idx, src_idx):
-                        reordered_pred_logits[t1, t2] = pred_contact_logits[i, s1, s2]
+                # Apply mask to exclude diagonal (self-interactions)
+                n_total_entities = n_objects + 1
+                non_diagonal_mask = (1 - torch.eye(n_total_entities, device=device)).bool()
                 
-                # Remove diagonal elements (self-contact)
-                diagonal_mask = torch.eye(n_objects, device=device)
-                off_diagonal_mask = (1 - diagonal_mask).bool()
+                # Create masks for object-object and environment interactions
+                # Object-object interactions: both indices < n_objects
+                object_object_mask = (torch.arange(n_total_entities, device=device).unsqueeze(1) < n_objects) & \
+                                     (torch.arange(n_total_entities, device=device).unsqueeze(0) < n_objects)
+                object_object_mask = object_object_mask.float() * non_diagonal_mask
                 
-                # Get predictions and labels for off-diagonal elements
-                batch_logits = reordered_pred_logits[off_diagonal_mask]  # [N*(N-1)]
-                batch_labels = contact_labels[off_diagonal_mask]  # [N*(N-1)]
+                # Environment interactions: at least one index == n_objects (environment)
+                environment_mask = 1 - object_object_mask  # Everything that's not object-object is environment
+                environment_mask = environment_mask.float() * non_diagonal_mask
                 
-                # Define positive and negative samples
-                pos_mask = (batch_labels == 1)
-                neg_mask = (batch_labels == 0)
+                # Get flattened logits and targets for sampling
+                flat_logits = reordered_pred_logits[non_diagonal_mask]
+                flat_targets = gt_contacts[non_diagonal_mask]
                 
-                num_pos = pos_mask.sum()
-                num_neg = neg_mask.sum()
+                # Flatten masks for weighting
+                flat_object_object_mask = object_object_mask[non_diagonal_mask]
+                flat_environment_mask = environment_mask[non_diagonal_mask]
                 
-                if num_pos == 0:
-                    # If no positive samples, skip this batch
-                    continue
+                # Apply weighting based on interaction type
+                weight_mask = flat_object_object_mask * self.object_object_weight + flat_environment_mask * self.environment_weight
                 
-                # Apply negative sampling strategy (similar to force matrix loss)
-                if num_pos > 0 and self.training and hard_negative_ratio < 1.0:
+                # Separate positive and negative samples
+                pos_mask = (flat_targets == 1)
+                neg_mask = (flat_targets == 0)
+                num_pos = pos_mask.sum().item()
+                num_neg = neg_mask.sum().item()
+                
+                # Initialize loss
+                loss = torch.tensor(0.0, device=device, requires_grad=True)
+                
+                if num_pos > 0 and self.training and self.hard_negative_ratio < 1.0:
+                    # Apply hard negative mining during training
                     with torch.no_grad():
-                        # Calculate prediction confidence for negative samples
-                        neg_confidence = torch.sigmoid(batch_logits) * neg_mask.float()
-                        # Select hard negatives (those with high predicted contact probability but should be zero)
-                        k = int(num_neg * hard_negative_ratio)
-                        k = max(k, int(num_pos * 2))  # At least 3x positive samples
+                        # Get predicted probabilities for negative samples
+                        neg_probs = torch.sigmoid(flat_logits[neg_mask])
+                        
+                        # Select hard negatives (highest predicted probabilities for negative samples)
+                        k = max(int(num_neg * self.hard_negative_ratio), int(num_pos * 2))
+                        k = min(k, num_neg)  # Don't exceed available negatives
                         
                         if k < num_neg and k > 0:
-                            hard_neg_values, _ = torch.topk(neg_confidence, k)
-                            if len(hard_neg_values) > 0:
-                                neg_threshold = hard_neg_values[-1]
-                                hard_neg_mask = (neg_confidence >= neg_threshold) & neg_mask
-                                neg_mask = hard_neg_mask
-                
-                # Create combined sample mask
-                sample_mask = pos_mask | neg_mask
-                
-                if sample_mask.sum() == 0:
-                    continue
-                
-                # Get sampled logits and labels
-                sampled_logits = batch_logits[sample_mask]
-                sampled_labels = batch_labels[sample_mask]
-                
-                # Apply positive weight balancing
-                sampled_pos_mask = (sampled_labels == 1)
-                sampled_neg_mask = (sampled_labels == 0)
-                
-                pos_weight = (sampled_neg_mask.sum().float() / (sampled_pos_mask.sum().float() + 1e-6))
-                pos_weight = torch.clamp(pos_weight, min=1.0, max=10.0)
-                
-                # Calculate weighted BCE loss using PyTorch's built-in pos_weight parameter
-                batch_contact_loss = F.binary_cross_entropy_with_logits(
-                    sampled_logits, sampled_labels, 
-                    pos_weight=pos_weight, 
-                    reduction='sum'
-                )
-                total_contact_loss += batch_contact_loss
-                
-                # Optional: print debug information occasionally
-                if self.training and torch.rand(1).item() < 0.001:  # 1% chance
-                    print(f"Contact Loss Debug - Batch {i}: pos_samples={int(sampled_pos_mask.sum())}, "
-                          f"neg_samples={int(sampled_neg_mask.sum())}, pos_weight={pos_weight:.2f}, "
-                          f"batch_loss={batch_contact_loss:.6f}")
-            else:
-                # If no force matrix available, use zero loss
-                valid_loss_count += 1
-        
+                            # Get top-k hardest negatives
+                            _, hard_neg_indices = torch.topk(neg_probs, int(k))
+                            
+                            # Create new negative mask with only hard negatives
+                            hard_neg_mask = torch.zeros_like(neg_mask)
+                            neg_indices = torch.where(neg_mask)[0]
+                            hard_neg_mask[neg_indices[hard_neg_indices]] = True
+                            
+                            # Update the sampling mask
+                            sample_mask = pos_mask | hard_neg_mask
+                        else:
+                            sample_mask = pos_mask | neg_mask
+                    
+                    # Calculate positive weight for class balancing
+                    num_hard_neg = sample_mask.sum().item() - num_pos
+                    pos_weight = max(1.0, num_hard_neg / (num_pos + 1e-6))
+                    pos_weight = min(pos_weight, 50.0)  # Cap the weight
+                    
+                    # Apply weight mask to the samples
+                    sample_weights = weight_mask[sample_mask]
+                    
+                    # Compute weighted BCE loss with interaction type weighting
+                    if sample_mask.sum() > 0:
+                        # Use weighted binary cross entropy
+                        bce_loss = F.binary_cross_entropy_with_logits(
+                            flat_logits[sample_mask],
+                            flat_targets[sample_mask],
+                            reduction='none'
+                        )
+                        
+                        # Apply both class balancing weight and interaction type weights
+                        weighted_loss = bce_loss * sample_weights
+                        
+                        # Normalize by the sum of weights to maintain consistent loss scale
+                        total_weight = sample_weights.sum()
+                        batch_contact_loss = weighted_loss.sum() / (total_weight + 1e-6)
+                        
+                        # Debug information
+                        if self.training and torch.rand(1).item() < 0.001:  # 1% chance
+                            sampled_pos_mask = sample_mask & pos_mask
+                            sampled_neg_mask = sample_mask & (~pos_mask)
+                            print(f"Contact Loss Debug - Batch {i}: pos_samples={int(sampled_pos_mask.sum())}, "
+                                  f"neg_samples={int(sampled_neg_mask.sum())}, pos_weight={pos_weight:.2f}, "
+                                  f"batch_loss={batch_contact_loss:.6f}")
+                        
+                        loss = batch_contact_loss
+                else:
+                    loss = torch.tensor(0.0, device=device, requires_grad=True)
+
+                if not torch.isnan(loss) and not torch.isinf(loss):
+                    total_contact_loss += loss
+                    valid_loss_count += 1
+
         if valid_loss_count > 0:
             total_contact_loss = total_contact_loss / valid_loss_count
         else:
             total_contact_loss = torch.tensor(0.0, device=device, requires_grad=True)
-        
-        # Ensure loss is not NaN
-        if torch.isnan(total_contact_loss):
-            print("Warning: NaN detected in contact classification loss, replacing with 0.")
-            total_contact_loss = torch.tensor(0.0, device=device, requires_grad=True)
-        
+            
         return {"loss_contact_classification": total_contact_loss}
 
     def loss_mixed_force_contact(self, outputs, targets, indices):
@@ -1073,17 +1174,17 @@ class SetCriterion(nn.Module):
         # Following the three-stage approach described in the documentation
         if self.current_epoch <= 55:
             # Early training (50-55 epochs): λ_contact = 1.0, λ_regression = 0.1
-            contact_weight = self.contact_loss_weight * 1.0
+            contact_weight = self.contact_loss_weight * 5.0
             force_weight = self.force_loss_weight * 0.1
         elif self.current_epoch <= 65:
             # Mid training (55-65 epochs): gradually increase λ_regression from 0.1 to 1.0
             progress = (self.current_epoch - 55) / 10.0  # 0 to 1 over 10 epochs
-            contact_weight = self.contact_loss_weight * 1.0
-            force_weight = self.force_loss_weight * (0.1 + 0.9 * progress)
+            contact_weight = self.contact_loss_weight * 5.0
+            force_weight = self.force_loss_weight * (0.1 + 4.9 * progress)
         else:
             # Late training (65+ epochs): λ_contact = 1.0, λ_regression = 1.0
-            contact_weight = self.contact_loss_weight * 1.0
-            force_weight = self.force_loss_weight * 1.0
+            contact_weight = self.contact_loss_weight * 5.0
+            force_weight = self.force_loss_weight * 5.0
         
         # Combine losses
         mixed_loss = contact_weight * contact_loss + force_weight * force_loss
@@ -1258,7 +1359,8 @@ def build(args):
         aux_weight_dict.update({k + f'_enc': v for k, v in weight_dict.items()})
         weight_dict.update(aux_weight_dict)
 
-    criterion = SetCriterion(matcher, weight_dict, losses, 
+    criterion = SetCriterion(matcher, weight_dict, losses,
+                             n_obj_queries=args.num_queries,
                              hard_negative_ratio=getattr(args, 'hard_negative_ratio', 0.2),
                              force_scale_factor=getattr(args, 'force_scale_factor', 5.0),
                              contact_loss_weight=getattr(args, 'contact_loss_weight', 1.0),
@@ -1266,7 +1368,9 @@ def build(args):
                              contact_threshold=getattr(args, 'contact_threshold', 1e-2),
                              focal_alpha=getattr(args, 'focal_alpha', 0.25),
                              focal_gamma=getattr(args, 'focal_gamma', 2.0),
-                             curriculum_epochs=getattr(args, 'curriculum_epochs', 30))
+                             curriculum_epochs=getattr(args, 'curriculum_epochs', 30),
+                             object_object_weight=getattr(args, 'object_object_weight', 5.0),
+                             environment_weight=getattr(args, 'environment_weight', 1.0))
     criterion.to(device)
 
     return model, criterion, matcher

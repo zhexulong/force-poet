@@ -525,12 +525,12 @@ def pose_evaluate(model, matcher, pose_evaluator, data_loader, image_set, bbox_m
                             final_pred_matrix = reordered_pred_matrix
                         
                         # Debug: Print force matrix information
-                        print(f"DEBUG Force Matrix Reordering:")
-                        print(f"  batch_pred_matrix shape: {batch_pred_matrix.shape}")
-                        print(f"  final_pred_matrix shape: {final_pred_matrix.shape}")
-                        print(f"  gt_matrix_final shape: {batch_gt_matrix.shape}")
-                        print(f"  tgt_idx: {tgt_idx}")
-                        print(f"  src_idx: {src_idx}")
+                        # print(f"DEBUG Force Matrix Reordering:")
+                        # print(f"  batch_pred_matrix shape: {batch_pred_matrix.shape}")
+                        # print(f"  final_pred_matrix shape: {final_pred_matrix.shape}")
+                        # print(f"  gt_matrix_final shape: {batch_gt_matrix.shape}")
+                        # print(f"  tgt_idx: {tgt_idx}")
+                        # print(f"  src_idx: {src_idx}")
                         
                         # Check original predicted force magnitudes before reordering
                         if hasattr(batch_pred_matrix, 'cpu'):
@@ -538,18 +538,18 @@ def pose_evaluate(model, matcher, pose_evaluator, data_loader, image_set, bbox_m
                         else:
                             orig_pred_matrix = batch_pred_matrix
                         orig_pred_magnitude = np.linalg.norm(orig_pred_matrix, axis=-1)
-                        print(f"  ORIGINAL batch_pred_matrix magnitude - max: {orig_pred_magnitude.max():.6f}, min: {orig_pred_magnitude.min():.6f}, mean: {orig_pred_magnitude.mean():.6f}")
-                        print(f"  ORIGINAL > 1e-2: {(orig_pred_magnitude > 1e-2).sum()}, > 1e-1: {(orig_pred_magnitude > 1e-1).sum()}, > 1.0: {(orig_pred_magnitude > 1.0).sum()}")
+                        # print(f"  ORIGINAL batch_pred_matrix magnitude - max: {orig_pred_magnitude.max():.6f}, min: {orig_pred_magnitude.min():.6f}, mean: {orig_pred_magnitude.mean():.6f}")
+                        # print(f"  ORIGINAL > 1e-2: {(orig_pred_magnitude > 1e-2).sum()}, > 1e-1: {(orig_pred_magnitude > 1e-1).sum()}, > 1.0: {(orig_pred_magnitude > 1.0).sum()}")
                         
                         # Check predicted force magnitudes after reordering
                         pred_force_magnitude = np.linalg.norm(final_pred_matrix, axis=-1)
-                        print(f"  REORDERED pred_force_magnitude - max: {pred_force_magnitude.max():.6f}, min: {pred_force_magnitude.min():.6f}, mean: {pred_force_magnitude.mean():.6f}")
-                        print(f"  REORDERED > 1e-2: {(pred_force_magnitude > 1e-2).sum()}, > 1e-1: {(pred_force_magnitude > 1e-1).sum()}, > 1.0: {(pred_force_magnitude > 1.0).sum()}")
+                        # print(f"  REORDERED pred_force_magnitude - max: {pred_force_magnitude.max():.6f}, min: {pred_force_magnitude.min():.6f}, mean: {pred_force_magnitude.mean():.6f}")
+                        # print(f"  REORDERED > 1e-2: {(pred_force_magnitude > 1e-2).sum()}, > 1e-1: {(pred_force_magnitude > 1e-1).sum()}, > 1.0: {(pred_force_magnitude > 1.0).sum()}")
                         
                         # Check ground truth force magnitudes
                         gt_force_magnitude = np.linalg.norm(batch_gt_matrix, axis=-1)
-                        print(f"  GT force magnitude - max: {gt_force_magnitude.max():.6f}, min: {gt_force_magnitude.min():.6f}, mean: {gt_force_magnitude.mean():.6f}")
-                        print(f"  GT > 1e-2: {(gt_force_magnitude > 1e-2).sum()}, > 1e-1: {(gt_force_magnitude > 1e-1).sum()}, > 1.0: {(gt_force_magnitude > 1.0).sum()}")
+                        # print(f"  GT force magnitude - max: {gt_force_magnitude.max():.6f}, min: {gt_force_magnitude.min():.6f}, mean: {gt_force_magnitude.mean():.6f}")
+                        # print(f"  GT > 1e-2: {(gt_force_magnitude > 1e-2).sum()}, > 1e-1: {(gt_force_magnitude > 1e-1).sum()}, > 1.0: {(gt_force_magnitude > 1.0).sum()}")
                         
                         
                         # Process contact matrix predictions if available

@@ -8,8 +8,9 @@ echo "Starting Isaac Sim threshold analysis evaluation..."
 # 设置参数
 CONFIG_FILE="configs/isaac_sim.yaml"
 OUTPUT_DIR="./results/isaac_sim_threshold_analysis"
-DATASET_PATH="../isaac_sim_poet_dataset_force_new"
-CHECKPOINT_PATH="./results/isaac_sim_training/2025-08-01_01:53:16/checkpoint0094.pth"
+DATASET_PATH="../isaac_sim_poet_dataset_force_point"
+# CHECKPOINT_PATH="./results/isaac_sim_training/2025-08-01_01:53:16/checkpoint0094.pth"
+CHECKPOINT_PATH="./results/isaac_sim_training/2025-08-17_02:13:05/checkpoint0079.pth"
 CLASS_INFO="/annotations/classes.json"
 MODEL_SYMMETRY="/annotations/isaac_sim_symmetries.json"
 MIN_THRESHOLD=0.05
@@ -29,7 +30,7 @@ CUDA_VISIBLE_DEVICES=1 python eval_threshold_analysis.py \
     --dataset custom \
     --dataset_path $DATASET_PATH \
     --output_dir $OUTPUT_DIR \
-    --n_classes 21 \
+    --n_classes 22 \
     --batch_size 4 \
     --eval_set val \
     --backbone maskrcnn \

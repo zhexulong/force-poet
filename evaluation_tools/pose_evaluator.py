@@ -1040,18 +1040,28 @@ class PoseEvaluator(object):
             for pred_matrix, gt_matrix in zip(cls_matrices_pred, cls_matrices_gt):
                 # pred_matrix: [N, N, 3], gt_matrix: [N, N, 3]
                 
-                # 1. Force vector MSE and MAE
-                vector_mse = np.mean((pred_matrix - gt_matrix) ** 2)
-                vector_mae = np.mean(np.abs(pred_matrix - gt_matrix))
+                # Create non-diagonal mask to ignore self-interactions
+                n_obj = pred_matrix.shape[0]
+                non_diagonal_mask = (1 - np.eye(n_obj)).astype(bool)  # Mask to ignore self-interactions
+                
+                # 1. Force vector MSE and MAE (excluding diagonal elements)
+                error_squared = (pred_matrix - gt_matrix) ** 2
+                error_abs = np.abs(pred_matrix - gt_matrix)
+                # Apply mask to errors (expand dimensions for broadcasting)
+                masked_error_squared = error_squared * non_diagonal_mask[:, :, np.newaxis].astype(float)
+                masked_error_abs = error_abs * non_diagonal_mask[:, :, np.newaxis].astype(float)
+                # Calculate mean over non-diagonal elements
+                vector_mse = np.sum(masked_error_squared) / (np.sum(non_diagonal_mask) * 3)  # Divide by number of non-diagonal elements * 3 (for x,y,z)
+                vector_mae = np.sum(masked_error_abs) / (np.sum(non_diagonal_mask) * 3)
                 cls_vector_errors.append({'mse': vector_mse, 'mae': vector_mae})
                 all_vector_errors.append({'mse': vector_mse, 'mae': vector_mae})
                 
-                # 2. Force direction accuracy (only for existing forces)
+                # 2. Force direction accuracy (only for existing forces, excluding diagonal)
                 gt_norms = np.linalg.norm(gt_matrix, axis=-1)  # [N, N]
                 pred_norms = np.linalg.norm(pred_matrix, axis=-1)  # [N, N]
                 
-                # Mask for positions where forces exist in ground truth
-                force_exists_mask = gt_norms > force_threshold
+                # Mask for positions where forces exist in ground truth (and not on diagonal)
+                force_exists_mask = (gt_norms > force_threshold) & non_diagonal_mask
                 
                 if np.any(force_exists_mask):
                     # Normalize vectors for direction comparison
@@ -1064,23 +1074,27 @@ class PoseEvaluator(object):
                     cls_direction_accuracies.append(mean_cosine_sim)
                     all_direction_errors.append(mean_cosine_sim)
                 
-                # 3. Force existence detection accuracy
-                pred_exists_mask = pred_norms > force_threshold
-                detection_accuracy = np.mean(force_exists_mask == pred_exists_mask)
+                # 3. Force existence detection accuracy (excluding diagonal)
+                pred_exists_mask = (pred_norms > force_threshold) & non_diagonal_mask
+                # Only consider non-diagonal elements for accuracy
+                detection_accuracy = np.sum((force_exists_mask == pred_exists_mask) & non_diagonal_mask) / np.sum(non_diagonal_mask)
                 cls_detection_accuracies.append(detection_accuracy)
                 all_detection_errors.append(detection_accuracy)
                 
-                # 4. Precision, Recall, F1 Score for force detection
+                # 4. Precision, Recall, F1 Score for force detection (excluding diagonal)
                 true_positives = np.sum(force_exists_mask & pred_exists_mask)
-                false_positives = np.sum(~force_exists_mask & pred_exists_mask)
-                false_negatives = np.sum(force_exists_mask & ~pred_exists_mask)
+                false_positives = np.sum((~force_exists_mask) & pred_exists_mask & non_diagonal_mask)
+                false_negatives = np.sum(force_exists_mask & (~pred_exists_mask))
                 
                 # Debug: Print force magnitude distributions and detection results
-                print(f"DEBUG Force Matrix Evaluation:")
-                print(f"  gt_norms - max: {gt_norms.max():.6f}, min: {gt_norms.min():.6f}, mean: {gt_norms.mean():.6f}")
-                print(f"  pred_norms - max: {pred_norms.max():.6f}, min: {pred_norms.min():.6f}, mean: {pred_norms.mean():.6f}")
-                print(f"  force_exists_mask sum: {force_exists_mask.sum()}")
-                print(f"  pred_exists_mask sum: {pred_exists_mask.sum()}")
+                print(f"DEBUG Force Matrix Evaluation (excluding diagonal elements):")
+                # Calculate statistics only for non-diagonal elements
+                non_diag_gt_norms = gt_norms[non_diagonal_mask]
+                non_diag_pred_norms = pred_norms[non_diagonal_mask]
+                print(f"  gt_norms - max: {non_diag_gt_norms.max():.6f}, min: {non_diag_gt_norms.min():.6f}, mean: {non_diag_gt_norms.mean():.6f}")
+                print(f"  pred_norms - max: {non_diag_pred_norms.max():.6f}, min: {non_diag_pred_norms.min():.6f}, mean: {non_diag_pred_norms.mean():.6f}")
+                print(f"  force_exists_mask sum: {force_exists_mask.sum()} (of {np.sum(non_diagonal_mask)} non-diagonal elements)")
+                print(f"  pred_exists_mask sum: {pred_exists_mask.sum()} (of {np.sum(non_diagonal_mask)} non-diagonal elements)")
                 print(f"  true_positives: {true_positives}, false_positives: {false_positives}, false_negatives: {false_negatives}")
                 
                 precision = true_positives / (true_positives + false_positives + 1e-8)

@@ -17,6 +17,7 @@ class, bounding box, relative pose and absolute poses. Moreover, data augmentati
 """
 import copy
 import json
+import logging
 import os
 from pathlib import Path
 
@@ -74,7 +75,37 @@ class PoseDataset(CocoDetection):
         img, target = super(PoseDataset, self).__getitem__(idx)
         image_id = self.ids[idx]
         img_info = self.coco.loadImgs(image_id)[0]
-        target = {'image_id': image_id, 'annotations': target, 'camera_intrinsics': img_info['camera_intrinsics']}
+        
+        # Load camera intrinsics from scene_camera.json if not in img_info
+        camera_intrinsics = img_info.get('camera_intrinsics')
+        if camera_intrinsics is None:
+            camera_intrinsics = self._load_camera_intrinsics(img_info)
+            
+        # Skip invalid cameras (those not found in scene_camera.json)
+        if camera_intrinsics is None:
+            # Try next sample by recursively calling __getitem__ with next index
+            next_idx = (idx + 1) % len(self.ids)
+            if next_idx != idx:  # Avoid infinite loop
+                return self.__getitem__(next_idx)
+            else:
+                # If all samples are invalid, return empty sample
+                empty_target = {
+                    'boxes': torch.zeros((0, 4), dtype=torch.float32),
+                    'labels': torch.zeros((0,), dtype=torch.int64),
+                    'image_id': torch.tensor([image_id]),
+                    'area': torch.zeros((0,), dtype=torch.float32),
+                    'iscrowd': torch.zeros((0,), dtype=torch.int64),
+                    'orig_size': torch.as_tensor([int(img.size[1]), int(img.size[0])]),
+                    'size': torch.as_tensor([int(img.size[1]), int(img.size[0])]),
+                    'camera_intrinsics': None
+                }
+                return img, empty_target
+            
+        target = {'image_id': image_id, 'annotations': target, 'camera_intrinsics': camera_intrinsics}
+        
+        # Load force data from original scene files BEFORE processing
+        target = self._load_force_data(img_info, target)
+        
         img, target = self.prepare(img, target) # Transforms bbox from xywh to xyxy
         if self._transforms is not None:
             img, target = self._transforms(img, target)  # Transforms bbox from un-normalized xyxy to normalized cxcywh (transforms.py 341)
@@ -99,14 +130,51 @@ class PoseDataset(CocoDetection):
 
             target["jitter_boxes"] = jitter_boxes
 
-        # Load force data from original scene files
-        target = self._load_force_data(img_info, target)
-
         return img, target
+
+    def _load_camera_intrinsics(self, img_info):
+        """
+        Load camera intrinsics from scene_camera.json for isaac_sim_poet_dataset_force_point
+        Returns None if camera is invalid (not found in scene_camera.json)
+        """
+        try:
+            # Extract scene_id and camera_id from file_name
+            file_name = img_info['file_name']  # e.g., "train/000001/rgb/000000.png"
+            parts = file_name.split('/')
+            if len(parts) >= 4:
+                set_name = parts[0]  # train/val
+                scene_name = parts[1]  # 000001
+                camera_name = parts[3].split('.')[0]  # 000000 (remove .png)
+                
+                # Convert camera name to the format used in scene_camera.json (remove leading zeros)
+                camera_id = str(int(camera_name))  # "000000" -> "0"
+                
+                # Construct path to scene_camera.json
+                scene_camera_path = os.path.join(self.root, set_name, scene_name, 'scene_camera.json')
+                
+                if os.path.exists(scene_camera_path):
+                    with open(scene_camera_path, 'r') as f:
+                        camera_data = json.load(f)
+                    
+                    # Get camera intrinsics for specific camera
+                    if camera_id in camera_data:
+                        cam_K = camera_data[camera_id].get('cam_K')
+                        if cam_K:
+                            return cam_K
+                    else:
+                        # Camera not found in scene_camera.json, this camera is invalid
+                        print(f"[INFO] Camera {camera_id} not found in scene_camera.json for scene {scene_name}, skipping invalid camera")
+                        return None
+                            
+        except Exception as e:
+            print(f"[WARNING] Failed to load camera intrinsics: {e}")
+        
+        # Return None for invalid cameras instead of default intrinsics
+        return None
 
     def _load_force_data(self, img_info, target):
         """
-        Load force data from original scene_gt.json files
+        Load force data from isaac_sim_poet_dataset_force_point scene_gt.json files
         """
         try:
             # Extract scene_id and camera_id from file_name
@@ -127,73 +195,125 @@ class PoseDataset(CocoDetection):
                     with open(scene_gt_path, 'r') as f:
                         scene_data = json.load(f)
                     
-                    # Get data for specific camera view
-                    if camera_id in scene_data:
-                        view_data = scene_data[camera_id]
-                        
-                        # Create force matrix from the force data
-                        force_matrix = self._create_force_matrix_from_scene_data(view_data, target)
-                        if force_matrix is not None:
-                            target['force_matrix'] = force_matrix
+                    # Get data for specific camera view and load force data
+                    force_data = self._create_force_data_from_isaac_sim_scene_gt(scene_data, camera_id, target)
+                    if force_data is not None:
+                        target.update(force_data)
                         
         except Exception as e:
-            print(f"[WARNING] Failed to load force data: {e}")
+            logging.warning(f"Failed to load force data: {e}")
+            import traceback
+            traceback.print_exc()
         
         return target
     
-    def _create_force_matrix_from_scene_data(self, view_data, target):
+    def _create_force_data_from_isaac_sim_scene_gt(self, scene_data, camera_id, target):
         """
-        Create force matrix from scene_gt.json view data
+        Create force data from isaac_sim_poet_dataset_force_point scene_gt.json format
+        
+        Args:
+            scene_data: Complete scene data from scene_gt.json
+            camera_id: Camera ID string
+            target: Current target dict with annotation information
+            
+        Returns:
+            dict: Force-related data to add to target
         """
-        # Get object information from target
-        if 'labels' not in target:
+        # Get object information from target.annotations if available
+        annotations = target.get('annotations', [])
+        if not annotations:
             return None
             
-        num_objects = len(target['labels'])
+        # Filter out objects with iscrowd flag
+        valid_annotations = [obj for obj in annotations if 'iscrowd' not in obj or obj['iscrowd'] == 0]
+        num_objects = len(valid_annotations)
         if num_objects == 0:
             return None
-            
-        # Initialize force matrix
-        force_matrix = torch.zeros((num_objects, num_objects, 3), dtype=torch.float32)
         
-        # Create mapping from obj_id to target index
-        # We need to match objects in view_data with objects in target
-        # This is tricky because target doesn't contain obj_id information
-        
-        # For now, assume objects are in the same order
-        # This is a simplification that may need refinement
-        if len(view_data) != num_objects:
-            print(f"[WARNING] Object count mismatch: scene_gt has {len(view_data)}, target has {num_objects}")
+        # Get camera view data - in new format it's directly a list under camera_id key
+        view_data = scene_data.get(camera_id, [])
+        if not view_data:
             return None
         
-        # Build obj_id to index mapping
-        obj_id_to_idx = {}
-        for idx, obj in enumerate(view_data):
-            obj_id = obj.get('obj_id')
-            if obj_id is not None:
-                obj_id_to_idx[obj_id] = idx
+        # Get forces data - in new format it's stored at the top level
+        forces_data = scene_data.get('forces', [])
         
-        # Fill force matrix
+        # Create mapping from obj_id to index in target arrays
+        # We need to match objects from annotation with objects in scene_gt
+        obj_id_to_target_idx = {}
+        
+        # Build the mapping using object order since COCO annotation preserves object order
+        for target_idx, obj_data in enumerate(view_data):
+            obj_id = obj_data.get('obj_id')
+            if obj_id is not None:
+                obj_id_to_target_idx[obj_id] = target_idx
+        
+        # Initialize force-related data structures
+        force_matrix = torch.zeros((num_objects, num_objects, 3), dtype=torch.float32)
+        contact_forces = torch.zeros((num_objects, 3), dtype=torch.float32) 
+        contact_positions = torch.zeros((num_objects, 3), dtype=torch.float32)
+        friction_forces = torch.zeros((num_objects, 3), dtype=torch.float32)
+        friction_positions = torch.zeros((num_objects, 3), dtype=torch.float32)
+        environment_forces = torch.zeros((num_objects, 3), dtype=torch.float32)  # For table forces
+        environment_contact_pos = torch.zeros((num_objects, 3), dtype=torch.float32)
+        environment_friction_forces = torch.zeros((num_objects, 3), dtype=torch.float32)
+        environment_friction_pos = torch.zeros((num_objects, 3), dtype=torch.float32)
+        
+        # Process force interactions
         force_count = 0
-        for obj_idx, obj in enumerate(view_data):
-            forces_list = obj.get('forces', [])
+        for force_interaction in forces_data:
+            source_obj_id = force_interaction.get('source_obj_id')
+            target_obj_id = force_interaction.get('target_obj_id')
             
-            for force_data in forces_list:
-                source_obj_id = force_data.get('source_obj_id')
-                target_obj_id = force_data.get('target_obj_id')
-                force_vector = force_data.get('force_vector', [0.0, 0.0, 0.0])
+            # Get target object index
+            if target_obj_id not in obj_id_to_target_idx:
+                continue
                 
-                # Map obj_ids to array indices
-                if source_obj_id in obj_id_to_idx and target_obj_id in obj_id_to_idx:
-                    source_idx = obj_id_to_idx[source_obj_id]
-                    target_idx = obj_id_to_idx[target_obj_id]
+            target_idx = obj_id_to_target_idx[target_obj_id]
+            
+            # Extract force components
+            contact_force = force_interaction.get('contact_force', [0.0, 0.0, 0.0])
+            contact_pos = force_interaction.get('contact_pos', [0.0, 0.0, 0.0])
+            friction_force = force_interaction.get('friction_force', [0.0, 0.0, 0.0])
+            friction_pos = force_interaction.get('friction_pos', [0.0, 0.0, 0.0])
+            
+            if source_obj_id == -1:
+                # Environment force (e.g., table)
+                environment_forces[target_idx] = torch.tensor(contact_force, dtype=torch.float32)
+                environment_contact_pos[target_idx] = torch.tensor(contact_pos, dtype=torch.float32)
+                environment_friction_forces[target_idx] = torch.tensor(friction_force, dtype=torch.float32)
+                environment_friction_pos[target_idx] = torch.tensor(friction_pos, dtype=torch.float32)
+                force_count += 1
+            else:
+                # Object-to-object force
+                if source_obj_id in obj_id_to_target_idx:
+                    source_idx = obj_id_to_target_idx[source_obj_id]
                     
-                    if 0 <= source_idx < num_objects and 0 <= target_idx < num_objects:
-                        force_matrix[source_idx, target_idx, :] = torch.tensor(force_vector, dtype=torch.float32)
-                        force_count += 1
+                    # Store in force matrix
+                    force_matrix[source_idx, target_idx, :] = torch.tensor(contact_force, dtype=torch.float32)
+                    
+                    # Also store individual force components for target object
+                    contact_forces[target_idx] += torch.tensor(contact_force, dtype=torch.float32)
+                    friction_forces[target_idx] += torch.tensor(friction_force, dtype=torch.float32)
+                    
+                    # Store positions (use last valid position if multiple forces on same object)
+                    contact_positions[target_idx] = torch.tensor(contact_pos, dtype=torch.float32)
+                    friction_positions[target_idx] = torch.tensor(friction_pos, dtype=torch.float32)
+                    
+                    force_count += 1
         
         if force_count > 0:
-            return force_matrix
+            return {
+                'force_matrix': force_matrix,
+                'contact_forces': contact_forces,
+                'contact_positions': contact_positions, 
+                'friction_forces': friction_forces,
+                'friction_positions': friction_positions,
+                'environment_forces': environment_forces,
+                'environment_contact_pos': environment_contact_pos,
+                'environment_friction_forces': environment_friction_forces,
+                'environment_friction_pos': environment_friction_pos
+            }
         else:
             return None
 
@@ -228,9 +348,16 @@ class ProcessPoseData(object):
         image_id = target["image_id"]
         image_id = torch.tensor([image_id])
 
-
-
         anno = target["annotations"]
+        
+        # Extract force data from top-level target if available
+        input_force_data = {}
+        force_keys = ['contact_forces', 'contact_positions', 'friction_forces', 'friction_positions',
+                     'environment_forces', 'environment_contact_pos', 'environment_friction_forces',
+                     'environment_friction_pos', 'force_matrix']
+        for key in force_keys:
+            if key in target:
+                input_force_data[key] = target[key]
 
         anno = [obj for obj in anno if 'iscrowd' not in obj or obj['iscrowd'] == 0]
 
@@ -245,6 +372,7 @@ class ProcessPoseData(object):
         classes = [obj["category_id"] for obj in anno]
         classes = torch.tensor(classes, dtype=torch.int64)
 
+        masks = None
         if self.return_masks:
             segmentations = [obj["segmentation"] for obj in anno]
             masks = convert_coco_poly_to_mask(segmentations, h, w)
@@ -322,11 +450,11 @@ class ProcessPoseData(object):
         elif anno and 'intrinsics' in anno[0]:
             intrinsics = [obj['intrinsics'] for obj in anno]
             intrinsics = torch.as_tensor(intrinsics, dtype=torch.float32)
+        # No default intrinsics for invalid cameras - they should be skipped at dataset level
         
         # Load mass and force information
         masses = None
         force_matrix = None
-        
         if anno and 'mass' in anno[0]:
             masses = [obj.get('mass', 0.0) for obj in anno]
             masses = torch.tensor(masses, dtype=torch.float32)
@@ -362,7 +490,7 @@ class ProcessPoseData(object):
         keep = (boxes[:, 3] > boxes[:, 1]) & (boxes[:, 2] > boxes[:, 0])
         boxes = boxes[keep]
         classes = classes[keep]
-        if self.return_masks:
+        if self.return_masks and masks is not None:
             masks = masks[keep]
         if keypoints is not None:
             keypoints = keypoints[keep]
@@ -381,10 +509,41 @@ class ProcessPoseData(object):
         if force_matrix is not None:
             # Apply keep mask to force matrix (both dimensions)
             force_matrix = force_matrix[keep][:, keep]
+            
+        # Apply keep mask to force-related data from isaac_sim_poet_dataset_force_point
+        contact_forces = input_force_data.get('contact_forces')
+        contact_positions = input_force_data.get('contact_positions')
+        friction_forces = input_force_data.get('friction_forces')
+        friction_positions = input_force_data.get('friction_positions')
+        environment_forces = input_force_data.get('environment_forces')
+        environment_contact_pos = input_force_data.get('environment_contact_pos')
+        environment_friction_forces = input_force_data.get('environment_friction_forces')
+        environment_friction_pos = input_force_data.get('environment_friction_pos')
+        force_matrix_isaac = input_force_data.get('force_matrix')
+        
+        if contact_forces is not None:
+            contact_forces = contact_forces[keep]
+        if contact_positions is not None:
+            contact_positions = contact_positions[keep]
+        if friction_forces is not None:
+            friction_forces = friction_forces[keep]
+        if friction_positions is not None:
+            friction_positions = friction_positions[keep]
+        if environment_forces is not None:
+            environment_forces = environment_forces[keep]
+        if environment_contact_pos is not None:
+            environment_contact_pos = environment_contact_pos[keep]
+        if environment_friction_forces is not None:
+            environment_friction_forces = environment_friction_forces[keep]
+        if environment_friction_pos is not None:
+            environment_friction_pos = environment_friction_pos[keep]
+        if force_matrix_isaac is not None:
+            force_matrix_isaac = force_matrix_isaac[keep][:, keep]
+            
         target = {}
         target["boxes"] = boxes
         target["labels"] = classes
-        if self.return_masks:
+        if self.return_masks and masks is not None:
             target["masks"] = masks
         target["image_id"] = image_id
 
@@ -410,7 +569,51 @@ class ProcessPoseData(object):
             target["masses"] = masses
         if force_matrix is not None:
             target["force_matrix"] = force_matrix
+            
+        # Add isaac_sim_poet_dataset_force_point specific force data
+        if contact_forces is not None:
+            target["contact_forces"] = contact_forces
+        if contact_positions is not None:
+            target["contact_positions"] = contact_positions
+        if friction_forces is not None:
+            target["friction_forces"] = friction_forces
+        if friction_positions is not None:
+            target["friction_positions"] = friction_positions
+        if environment_forces is not None:
+            target["environment_forces"] = environment_forces
+        if environment_contact_pos is not None:
+            target["environment_contact_pos"] = environment_contact_pos
+        if environment_friction_forces is not None:
+            target["environment_friction_forces"] = environment_friction_forces
+        if environment_friction_pos is not None:
+            target["environment_friction_pos"] = environment_friction_pos
+        if force_matrix_isaac is not None:
+            target["force_matrix"] = force_matrix_isaac  # Override with Isaac Sim force matrix if available
 
+        # Expand force matrix to include environment forces (N+1 x N+1)
+        final_force_matrix = target.get("force_matrix")
+        if final_force_matrix is not None and environment_forces is not None:
+            num_objects = final_force_matrix.shape[0]
+            # Create expanded force matrix (N+1) x (N+1) x 3
+            expanded_force_matrix = torch.zeros((num_objects + 1, num_objects + 1, 3), dtype=torch.float32)
+            
+            # Copy original object-to-object forces (upper-left N x N block)
+            expanded_force_matrix[:num_objects, :num_objects] = final_force_matrix
+            
+            # Fill environment forces: environment -> objects (last column, excluding last element)
+            expanded_force_matrix[:num_objects, num_objects] = environment_forces
+            
+            # Fill reaction forces: objects -> environment (last row, excluding last element)
+            # According to Newton's third law: F_reaction = -F_action
+            expanded_force_matrix[num_objects, :num_objects] = -environment_forces
+            
+            # Environment self-interaction (last element) remains zero
+            expanded_force_matrix[num_objects, num_objects] = torch.zeros(3, dtype=torch.float32)
+            
+            target["force_matrix"] = expanded_force_matrix
+        else:
+            print("[WARNING] Force matrix not found or environment forces not available, skipping expansion.")
+            print("final_force_matrix:", final_force_matrix is not None, "environment_forces:", environment_forces is not None)
         # for conversion to coco api
         area = torch.tensor([obj["area"] for obj in anno])
         iscrowd = torch.tensor([obj["iscrowd"] if "iscrowd" in obj else 0 for obj in anno])

@@ -162,7 +162,7 @@ def get_args_parser():
     parser.add_argument('--test_set', default="test", type=str, help="Determine on which dataset split to test")
     parser.add_argument('--synt_background', default=None, type=str,
                         help="Directory containing the background images from which to sample")
-    parser.add_argument('--n_classes', default=21, type=int, help="Number of classes present in the dataset")
+    parser.add_argument('--n_classes', default=22, type=int, help="Number of classes present in the dataset")
     parser.add_argument('--jitter_probability', default=0.5, type=float,
                         help='If bbox_mode is set to jitter, this value indicates the probability '
                              'that jitter is applied to a bounding box.')

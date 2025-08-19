@@ -16,6 +16,7 @@ logger = logging.getLogger(__name__)
 
 # YCB object mapping - maps category IDs to names
 YCB_CATEGORIES = {
+    0: "000_mini58",
     1: "002_master_chef_can",
     2: "003_cracker_box",
     3: "004_sugar_box",
@@ -112,6 +113,12 @@ def create_coco_annotations(dataset_dir, split):
             img_idx = img_name.split('.')[0]  # e.g., "000000" from "000000.png"
             img_idx_int = str(int(img_idx))  # Convert "000000" to "0" for JSON key lookup
             
+            # Skip Camera 0 due to positioning issues
+            camera_id = int(img_idx)
+            if camera_id == 0:
+                logger.info(f"Skipping Camera 0 image: {img_name} (positioning issues)")
+                continue
+            
             # Get image dimensions
             try:
                 with Image.open(img_file) as img:
@@ -128,7 +135,7 @@ def create_coco_annotations(dataset_dir, split):
                 "height": height,
                 "license": 1,
                 "scene_id": int(scene_name),
-                "camera_id": int(img_idx)
+                "camera_id": camera_id  # Use the already calculated camera_id
             }
             
             # Add camera intrinsics if available

@@ -23,7 +23,7 @@ def convert_isaac_sim_to_poet(isaac_sim_path, output_path, split='train'):
         isaac_classes = json.load(f)
     
     # Create categories for PoET format
-    categories = [{'supercategory': 'background', 'id': 0, 'name': 'background'}]
+    categories = [{'supercategory': 'background', 'id': -1, 'name': 'background'}]
     for class_id, class_name in isaac_classes.items():
         categories.append({
             'supercategory': class_name,

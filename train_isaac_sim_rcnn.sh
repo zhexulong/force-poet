@@ -12,20 +12,20 @@ source /opt/anaconda3/etc/profile.d/conda.sh
 conda activate poet_isaac
 
 # Set CUDA device (modify as needed)
-export CUDA_VISIBLE_DEVICES=3
+export CUDA_VISIBLE_DEVICES=2
 
 # Training parameters
 CONFIG_FILE="configs/isaac_sim.yaml"
 OUTPUT_DIR="./results/isaac_sim_training"
-DATASET_PATH="../isaac_sim_poet_dataset_force"
+DATASET_PATH="../isaac_sim_poet_dataset_force_point"
 
 # Create output directory
 mkdir -p $OUTPUT_DIR
 
 # Set checkpoint path for resuming training
 # Note: Update this path to point to your actual checkpoint file
-CHECKPOINT_PATH="./results/isaac_sim_training/2025-07-31_15:41:45/checkpoint0049.pth"
-
+# CHECKPOINT_PATH="./results/isaac_sim_training/2025-07-31_15:41:45/checkpoint0049.pth"
+CHECKPOINT_PATH="./results/isaac_sim_training/2025-08-14_23:03:29/checkpoint0049.pth"
 # Check if checkpoint exists, if not, look for alternatives
 if [ ! -f "$CHECKPOINT_PATH" ]; then
     echo "Warning: Checkpoint file $CHECKPOINT_PATH not found!"
@@ -50,11 +50,11 @@ if [ ! -f "$CHECKPOINT_PATH" ]; then
 fi
 
 # Run training with force matrix prediction (resume from checkpoint if available)
-CUDA_VISIBLE_DEVICES=3 nohup python main.py \
+CUDA_VISIBLE_DEVICES=2 nohup python main.py \
     --dataset custom \
     --dataset_path $DATASET_PATH \
     --output_dir $OUTPUT_DIR \
-    --n_classes 21 \
+    --n_classes 22 \
     --lr 1e-4 \
     --lr_drop 95 \
     --lr_backbone 1e-6 \
@@ -87,7 +87,7 @@ CUDA_VISIBLE_DEVICES=3 nohup python main.py \
     --device cuda \
     $([ -n "$CHECKPOINT_PATH" ] && echo "--resume $CHECKPOINT_PATH") \
     --class_info /annotations/classes.json \
-    --model_symmetry /annotations/isaac_sim_symmetries.json > train_rcnn_change_loss_2.log 2>&1 &
+    --model_symmetry /annotations/isaac_sim_symmetries.json > train_env_rcnn_env_factor.log 2>&1 &
 
 echo "Training completed!"
 echo "Results saved to: $OUTPUT_DIR"
